@@ -56,12 +56,21 @@ def my_assign_weights(context, data):
     """
     Assign weights to securities that we want to order.
     """
+    
     pass
  
 def my_rebalance(context,data):
     """
     Execute orders according to our schedule_function() timing. 
     """
+    for stock in context.portfolio.positions.iterkeys():  
+        if stock not in context.security_list:  
+            order_target(stock, 0)  
+    
+    long_weight = 1.0 / float(len(context.security_list))  
+    for long_stock in context.security_list:  
+        if data.can_trade(long_stock):  
+            order_target_percent(long_stock, long_weight)
     pass
  
 def my_record_vars(context, data):
