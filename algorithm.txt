@@ -1,11 +1,35 @@
 """
-This is a template algorithm on Quantopian for you to adapt and fill in.
+Copyright Chris Short 2016
+Use is unauthorized without written permission
+
+    # TODO
+    # 1. filter S&P 500 via static list (this can be done last for v1 or put off until v2) - fetcher
+    # 2. screen no utilities sector
+    # 3. screen top 7 by any easy factor
+    # 4. (future) filter by 4% current and 5 yr avg. div yld (possibly see morningstar fundamentals)
+    # 5. (future) screen top 7 by debt/equity ratio (see morningstar fundamentals)
+
+
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
 from quantopian.pipeline import Pipeline
 from quantopian.pipeline.data.builtin import USEquityPricing
 from quantopian.pipeline.factors import AverageDollarVolume
+from quantopian.pipeline.classifiers.morningstar import Sector
+from quantopian.pipeline.data import morningstar  
+from quantopian.pipeline import CustomFactor  
  
+UTILITIES_SECTOR = 207
+
+class MarketCap(CustomFactor):  
+    # Pre-declare inputs and window_length  
+    inputs = [USEquityPricing.close, morningstar.valuation.shares_outstanding]  
+    window_length = 1
+
+    # Compute market cap value  
+    def compute(self, today, assets, out, close, shares):  
+        out[:] = close[-1] * shares[-1]
+    
 def initialize(context):
     """
     Called once at the start of the algorithm.
@@ -19,16 +43,30 @@ def initialize(context):
     # Record tracking variables at the end of each day.
     schedule_function(my_record_vars, date_rules.every_day(), time_rules.market_close())
      
-    # Create our dynamic stock selector.
-    attach_pipeline(make_pipeline(), 'my_pipeline')
+    pipe = Pipeline()  
+    attach_pipeline(pipe, name='my_pipeline')  
+    #***Trying to filter out stocks with a market cap below $50 mill  
+    mkt_cap = MarketCap()  
+    mkt_cap_price = mkt_cap > 50000000  
+    pipe.set_screen(mkt_cap_price)  
+    #***I am trying to get these fundamentals from the last year.  
+    ent_val = morningstar.valuation.enterprise_value.latest
+
+    ebt = morningstar.income_statement.ebit.latest
+
+    at = morningstar.operation_ratios.assets_turnover.latest  
+    earnings_yield = ebt/ent_val  
+    #I want to add the earnings_yield + roc and find 30 stocks with the highest combination of these two fundamentals.  
+    pos = earnings_yield + at
+
+    pos_rank = pos.rank(ascending=False)  
+    pipe.add(pos_rank, 'pos_rank')
+    
+    context.my_leverage = 1
          
 def make_pipeline():
-    """
-    A function to create our dynamic stock selector (pipeline). Documentation on
-    pipeline can be found here: https://www.quantopian.com/help#pipeline-title
-    """
+
     
-     
     # Create a dollar volume factor.
     dollar_volume = AverageDollarVolume(window_length=1)
  
@@ -43,23 +81,23 @@ def make_pipeline():
     )
     return pipe
  
-def before_trading_start(context, data):
-    """
-    Called every day before market open.
-    """
-    context.output = pipeline_output('my_pipeline')
-  
-    # These are the securities that we are interested in trading each day.
-    context.security_list = context.output.index
+def before_trading_start(context, data):  
+    my_pipeline = pipeline_output('my_pipeline')  
+    log.info((my_pipeline.sort('pos_rank')).head(30))  
+    context.my_pipeline = my_pipeline.sort(['pos_rank'], ascending=False).iloc[:40]
+    context.security_list = pipeline_output('my_pipeline').index[:7]
+
+    update_universe(context.my_pipeline.index)
+    pass
      
 def my_assign_weights(context, data):
     """
     Assign weights to securities that we want to order.
+    TBD: Weight according to optimal sharpe ratio
     """
-    
     pass
  
-def my_rebalance(context,data):
+def my_rebalance(context,data):    
     """
     Execute orders according to our schedule_function() timing. 
     """
@@ -95,5 +133,6 @@ def my_record_vars(context, data):
 def handle_data(context,data):
     """
     Called every minute.
+    TBD: Delete?
     """
     pass
