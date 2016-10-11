@@ -4,32 +4,32 @@ Use is unauthorized without written permission
 
     # TODO
     # 1. filter S&P 500 via static list (this can be done last for v1 or put off until v2) - fetcher
-    # 2. screen no utilities sector
-    # 3. screen top 7 by any easy factor
+    # X. screen no utilities sector
+    # X. screen top 7 by any easy factor
     # 4. (future) filter by 4% current and 5 yr avg. div yld (possibly see morningstar fundamentals)
-    # 5. (future) screen top 7 by debt/equity ratio (see morningstar fundamentals)
+    # X. screen top 7 by debt/equity ratio (see morningstar fundamentals)
 
 
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
 from quantopian.pipeline import Pipeline
-from quantopian.pipeline.data.builtin import USEquityPricing
-from quantopian.pipeline.factors import AverageDollarVolume
+#from quantopian.pipeline.data.builtin import USEquityPricing
+#from quantopian.pipeline.factors import AverageDollarVolume
 from quantopian.pipeline.classifiers.morningstar import Sector
 from quantopian.pipeline.data import morningstar  
-from quantopian.pipeline import CustomFactor  
+#from quantopian.pipeline import CustomFactor  
  
 UTILITIES_SECTOR = 207
 
-class MarketCap(CustomFactor):  
-    # Pre-declare inputs and window_length  
-    inputs = [USEquityPricing.close, morningstar.valuation.shares_outstanding]  
-    window_length = 1
+#class MarketCap(CustomFactor):  
+#    # Pre-declare inputs and window_length  
+#    inputs = [USEquityPricing.close, morningstar.valuation.shares_outstanding]  
+#    window_length = 1
+#
+#    # Compute market cap value  
+#    def compute(self, today, assets, out, close, shares):  
+#        out[:] = close[-1] * shares[-1]
 
-    # Compute market cap value  
-    def compute(self, today, assets, out, close, shares):  
-        out[:] = close[-1] * shares[-1]
-    
 def initialize(context):
     """
     Called once at the start of the algorithm.
@@ -46,45 +46,22 @@ def initialize(context):
     pipe = Pipeline()  
     attach_pipeline(pipe, name='my_pipeline')  
     #***Trying to filter out stocks with a market cap below $50 mill  
-    mkt_cap = MarketCap()  
-    mkt_cap_price = mkt_cap > 50000000  
-    pipe.set_screen(mkt_cap_price)  
-    #***I am trying to get these fundamentals from the last year.  
-    ent_val = morningstar.valuation.enterprise_value.latest
-
-    ebt = morningstar.income_statement.ebit.latest
-
-    at = morningstar.operation_ratios.assets_turnover.latest  
-    earnings_yield = ebt/ent_val  
-    #I want to add the earnings_yield + roc and find 30 stocks with the highest combination of these two fundamentals.  
-    pos = earnings_yield + at
-
-    pos_rank = pos.rank(ascending=False)  
-    pipe.add(pos_rank, 'pos_rank')
+    #mkt_cap = MarketCap()  
+    #mkt_cap_price = mkt_cap > 50000000  
+    #pipe.set_screen(mkt_cap_price)  
+    
+    # Screen for no utilities
+    sector_code = morningstar.asset_classification.morningstar_sector_code.latest
+    pipe.set_screen(sector_code != UTILITIES_SECTOR)
+    
+    debtToEquity = morningstar.operation_ratios.long_term_debt_equity_ratio.latest
+    pipe.add(debtToEquity, 'debtToEquity')
     
     context.my_leverage = 1
-         
-def make_pipeline():
 
-    
-    # Create a dollar volume factor.
-    dollar_volume = AverageDollarVolume(window_length=1)
- 
-    # Pick the top 1% of stocks ranked by dollar volume.
-    high_dollar_volume = dollar_volume.percentile_between(99, 100)
-     
-    pipe = Pipeline(
-        screen = high_dollar_volume,
-        columns = {
-            'dollar_volume': dollar_volume
-        }
-    )
-    return pipe
- 
 def before_trading_start(context, data):  
     my_pipeline = pipeline_output('my_pipeline')  
-    log.info((my_pipeline.sort('pos_rank')).head(30))  
-    context.my_pipeline = my_pipeline.sort(['pos_rank'], ascending=False).iloc[:40]
+    context.my_pipeline = my_pipeline.sort(['debtToEquity'], ascending=False).iloc[:40]
     context.security_list = pipeline_output('my_pipeline').index[:7]
 
     update_universe(context.my_pipeline.index)
