@@ -3,32 +3,18 @@ Copyright Chris Short 2016
 Use is unauthorized without written permission
 
     # TODO
-    # 1. filter S&P 500 via static list (this can be done last for v1 or put off until v2) - fetcher
-    # X. screen no utilities sector
-    # X. screen top 7 by any easy factor
-    # 4. (future) filter by 4% current and 5 yr avg. div yld (possibly see morningstar fundamentals)
-    # X. screen top 7 by debt/equity ratio (see morningstar fundamentals)
-
+    # 1. filter S&P 500 via static list (fetcher)
+    # 2. filter by 4% 5 yr avg. div yld
+    # 3. add unemployment pullout signal
+    # 4. add momentum pullout signal
 
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
 from quantopian.pipeline import Pipeline
-#from quantopian.pipeline.data.builtin import USEquityPricing
-#from quantopian.pipeline.factors import AverageDollarVolume
 from quantopian.pipeline.classifiers.morningstar import Sector
 from quantopian.pipeline.data import morningstar  
-#from quantopian.pipeline import CustomFactor  
  
 UTILITIES_SECTOR = 207
-
-#class MarketCap(CustomFactor):  
-#    # Pre-declare inputs and window_length  
-#    inputs = [USEquityPricing.close, morningstar.valuation.shares_outstanding]  
-#    window_length = 1
-#
-#    # Compute market cap value  
-#    def compute(self, today, assets, out, close, shares):  
-#        out[:] = close[-1] * shares[-1]
 
 def initialize(context):
     """
@@ -45,14 +31,15 @@ def initialize(context):
      
     pipe = Pipeline()  
     attach_pipeline(pipe, name='my_pipeline')  
-    #***Trying to filter out stocks with a market cap below $50 mill  
-    #mkt_cap = MarketCap()  
-    #mkt_cap_price = mkt_cap > 50000000  
-    #pipe.set_screen(mkt_cap_price)  
     
-    # Screen for no utilities
+    # Screen for no utilities and high dividend
     sector_code = morningstar.asset_classification.morningstar_sector_code.latest
-    pipe.set_screen(sector_code != UTILITIES_SECTOR)
+    sector_filter = (sector_code != UTILITIES_SECTOR)
+    
+    div_yld = morningstar.valuation_ratios.dividend_yield.latest
+    div_filter = (div_yld > .04)
+    
+    pipe.set_screen(sector_filter & div_filter)
     
     debtToEquity = morningstar.operation_ratios.long_term_debt_equity_ratio.latest
     pipe.add(debtToEquity, 'debtToEquity')
