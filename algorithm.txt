@@ -5,6 +5,8 @@ Use is unauthorized without written permission
     # TODO
     # 1. filter S&P 500 via static list (fetcher)
     # 2. filter by 4% 5 yr avg. div yld
+    #    Either use custom factor (see https://www.quantopian.com/posts/fundamental-history-based-algo#5616e27ea8e03d7580000155)
+    #    ... or, query quandl for each stock
     # 3. add unemployment pullout signal
     # 4. add momentum pullout signal
 
@@ -47,9 +49,6 @@ def initialize(context):
     context.my_leverage = 1
 
 def before_trading_start(context, data):  
-    my_pipeline = pipeline_output('my_pipeline')  
-    context.my_pipeline = my_pipeline.sort_values(by='debtToEquity', ascending=False).iloc[:7]
-    context.security_list = pipeline_output('my_pipeline').index[:7]
     pass
      
 def my_assign_weights(context, data):
@@ -59,7 +58,11 @@ def my_assign_weights(context, data):
     """
     pass
  
-def my_rebalance(context,data):    
+def my_rebalance(context,data):  
+    my_pipeline = pipeline_output('my_pipeline')  
+    context.my_pipeline = my_pipeline.sort_values(by='debtToEquity', ascending=False).iloc[:7]
+    context.security_list = pipeline_output('my_pipeline').index[:7]
+    
     """
     Execute orders according to our schedule_function() timing. 
     """
