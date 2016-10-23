@@ -98,7 +98,7 @@ def my_record_vars(context, data):
     long_count = 0
     short_count = 0
     cash = context.portfolio.cash
-    portfolio_value = context.portfolio.portfolio_value
+    
     log_str = "holding: "
     for position in context.portfolio.positions.itervalues():
         if position.amount > 0:
@@ -108,7 +108,7 @@ def my_record_vars(context, data):
             short_count += 1
 
     # Plot the counts
-    record(num_long=long_count, num_short=short_count, cash=cash, portfolio_value=portfolio_value)
+    record(num_long=long_count, num_short=short_count, cash=cash)
     log.info(log_str)
     pass
  
