@@ -3,20 +3,21 @@ Copyright Chris Short 2016
 Use is unauthorized without written permission
 
     # TODO
-    # 1. filter S&P 500 via static list (fetcher)
-    # 2. filter by 4% 5 yr avg. div yld
-    #    Either use custom factor (see https://www.quantopian.com/posts/fundamental-history-based-algo#5616e27ea8e03d7580000155)
-    #    ... or, query quandl for each stock
-    # 3. add unemployment pullout signal
-    # 4. add momentum pullout signal
+     1. filter by 4% 5 yr avg. div yld
+        Either use custom factor (see https://www.quantopian.com/posts/fundamental-history-based-algo#5616e27ea8e03d7580000155)
+        ... or, query quandl for each stock
+     2. add unemployment pullout signal
+     3. add momentum pullout signal
+     4. Filter by actual S&P 500
 
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
 from quantopian.pipeline import Pipeline
 from quantopian.pipeline.classifiers.morningstar import Sector
-from quantopian.pipeline.data import morningstar  
+from quantopian.pipeline.data import morningstar
  
 UTILITIES_SECTOR = 207
+
 
 def initialize(context):
     """
@@ -34,14 +35,25 @@ def initialize(context):
     pipe = Pipeline()  
     attach_pipeline(pipe, name='my_pipeline')  
     
-    # Screen for no utilities and high dividend
+    # Screen for no utilities
     sector_code = morningstar.asset_classification.morningstar_sector_code.latest
     sector_filter = (sector_code != UTILITIES_SECTOR)
     
+    # Screen for high current dividend yield
     div_yld = morningstar.valuation_ratios.dividend_yield.latest
+    pipe.add(div_yld, 'div_yld')
     div_filter = (div_yld > .04)
     
-    pipe.set_screen(sector_filter & div_filter)
+    # Screen for approximation of S&P 500
+    mkt_cap = morningstar.valuation.market_cap.latest
+    country_id = morningstar.company_reference.country_id.latest
+    exchange_id = morningstar.company_reference.primary_exchange_id.latest
+    pipe.add(mkt_cap, 'mkt_cap')
+    pipe.add(country_id, 'country_id')
+    pipe.add(exchange_id, 'exchange_id')
+    mktCap_filter = (mkt_cap > 4000000000)
+    
+    pipe.set_screen(sector_filter & div_filter & mktCap_filter)
     
     debtToEquity = morningstar.operation_ratios.long_term_debt_equity_ratio.latest
     pipe.add(debtToEquity, 'debtToEquity')
@@ -50,30 +62,33 @@ def initialize(context):
 
 def before_trading_start(context, data):  
     pass
-     
-def my_assign_weights(context, data):
-    """
-    Assign weights to securities that we want to order.
-    TBD: Weight according to optimal sharpe ratio
-    """
-    pass
  
 def my_rebalance(context,data):  
-    my_pipeline = pipeline_output('my_pipeline')  
-    context.my_pipeline = my_pipeline.sort_values(by='debtToEquity', ascending=False).iloc[:7]
-    context.security_list = pipeline_output('my_pipeline').index[:7]
+    """
+    Filter pipeline output to security list
+    """
+    my_pipeline = pipeline_output('my_pipeline')
+    
+    # approixmate S&P 500
+    snp_stocks = my_pipeline[
+        (my_pipeline.country_id == "USA") &
+        ((my_pipeline.exchange_id == "NAS") |
+            (my_pipeline.exchange_id == "NYS")) &
+        (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:500]
+    
+    # Get top 7 by debt-equity ratio
+    context.security_list = snp_stocks.sort_values(by='debtToEquity',ascending=False).index[:7]
     
     """
     Execute orders according to our schedule_function() timing. 
     """
     for stock in context.portfolio.positions.iterkeys():  
         if stock not in context.security_list:  
-            order_target(stock, 0)  
+            order_target(stock, 0)
     
     long_weight = 1.0 / float(len(context.security_list))  
-    for long_stock in context.security_list:  
-        if data.can_trade(long_stock):  
-            order_target_percent(long_stock, long_weight)
+    for long_stock in context.security_list:
+        order_target_percent(long_stock, long_weight)
     pass
  
 def my_record_vars(context, data):
@@ -84,15 +99,17 @@ def my_record_vars(context, data):
     short_count = 0
     cash = context.portfolio.cash
     portfolio_value = context.portfolio.portfolio_value
-
+    log_str = "holding: "
     for position in context.portfolio.positions.itervalues():
         if position.amount > 0:
             long_count += 1
+            log_str += position.sid.symbol + ", "
         if position.amount < 0:
             short_count += 1
 
     # Plot the counts
     record(num_long=long_count, num_short=short_count, cash=cash, portfolio_value=portfolio_value)
+    log.info(log_str)
     pass
  
 def handle_data(context,data):
