@@ -9,6 +9,7 @@ Use is unauthorized without written permission
      2. add unemployment pullout signal
      3. add momentum pullout signal
      4. Filter by actual S&P 500
+     5. Graph realized returns on sale
 
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
@@ -53,10 +54,11 @@ def initialize(context):
     pipe.add(exchange_id, 'exchange_id')
     mktCap_filter = (mkt_cap > 4000000000)
     
-    pipe.set_screen(sector_filter & div_filter & mktCap_filter)
-    
+    # Screen for non-negative debt-equity ratio
     debtToEquity = morningstar.operation_ratios.long_term_debt_equity_ratio.latest
     pipe.add(debtToEquity, 'debtToEquity')
+    
+    pipe.set_screen(sector_filter & div_filter & mktCap_filter)
     
     context.my_leverage = 1
 
@@ -71,13 +73,13 @@ def my_rebalance(context,data):
     
     # approixmate S&P 500
     snp_stocks = my_pipeline[
-        (my_pipeline.country_id == "USA") &
-        ((my_pipeline.exchange_id == "NAS") |
-            (my_pipeline.exchange_id == "NYS")) &
-        (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:500]
+        (my_pipeline.country_id == "USA") & 
+        ((my_pipeline.exchange_id == "NAS") | 
+         (my_pipeline.exchange_id == "NYSE")) & 
+        (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:50]
     
     # Get top 7 by debt-equity ratio
-    context.security_list = snp_stocks.sort_values(by='debtToEquity',ascending=False).index[:7]
+    context.security_list = snp_stocks.sort_values(by='debtToEquity',ascending=True).index[:7]
     
     """
     Execute orders according to our schedule_function() timing. 
