@@ -6,9 +6,10 @@ Use is unauthorized without written permission
      1. filter by 4% 5 yr avg. div yld
         Either use custom factor (see https://www.quantopian.com/posts/fundamental-history-based-algo#5616e27ea8e03d7580000155)
         ... or, query quandl for each stock
-     2. add unemployment pullout signal
-     3. add momentum pullout signal
-     4. Filter by actual S&P 500
+        ... or, see what other free quantopian providers
+     2. add unemployment pullout signal (see https://www.quantopian.com/data/quandl/fred_unrate)
+     3. add momentum pullout signal (see monthly rebal in https://www.quantopian.com/posts/quantopian-open-example-algorithm-to-control-leverage)
+     4. Filter by actual S&P 500 
      5. Graph realized returns on sale
 
 """
@@ -59,8 +60,6 @@ def initialize(context):
     pipe.add(debtToEquity, 'debtToEquity')
     
     pipe.set_screen(sector_filter & div_filter & mktCap_filter)
-    
-    context.my_leverage = 1
 
 def before_trading_start(context, data):  
     pass
@@ -88,7 +87,7 @@ def my_rebalance(context,data):
         if stock not in context.security_list:  
             order_target(stock, 0)
     
-    long_weight = 1.0 / float(len(context.security_list))  
+    long_weight = 2.0 / float(len(context.security_list))  
     for long_stock in context.security_list:
         order_target_percent(long_stock, long_weight)
     pass
@@ -108,6 +107,7 @@ def my_record_vars(context, data):
             log_str += position.sid.symbol + ", "
         if position.amount < 0:
             short_count += 1
+            log_str += position.sid.symbol + "(short), "
 
     # Plot the counts
     record(num_long=long_count, num_short=short_count, cash=cash)
