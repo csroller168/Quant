@@ -6,20 +6,35 @@ Use is unauthorized without written permission
      1. filter by 4% 5 yr avg. div yld
         Either use custom factor (see https://www.quantopian.com/posts/fundamental-history-based-algo#5616e27ea8e03d7580000155)
         ... or, query quandl for each stock
+            (if cant fetch all stock div ylds in time, short circuit after 7, or perform fetching in separately scheduled func)
         ... or, see what other free quantopian providers
-     2. add unemployment pullout signal (see https://www.quantopian.com/data/quandl/fred_unrate)
-     3. add momentum pullout signal (see monthly rebal in https://www.quantopian.com/posts/quantopian-open-example-algorithm-to-control-leverage)
-     4. Filter by actual S&P 500 
-     5. Graph realized returns on sale
+     2. Consider change momentum indicator to mavg(14) <= mavg(50)
+     3. Filter by actual S&P 500 
+     4. Graph realized returns on sale
 
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
 from quantopian.pipeline import Pipeline
 from quantopian.pipeline.classifiers.morningstar import Sector
+from quantopian.pipeline import CustomFactor
 from quantopian.pipeline.data import morningstar
+from quantopian.pipeline.data.quandl import fred_unrate
  
 UTILITIES_SECTOR = 207
 
+class CurrUnemplFactor(CustomFactor):  
+    window_length = 1  
+    inputs = [fred_unrate.value]
+
+    def compute(self, today, assets, out, unempl): 
+        out[:] = unempl
+
+class MavgUnemplFactor(CustomFactor):  
+    window_length = 4  
+    inputs = [fred_unrate.value]
+
+    def compute(self, today, assets, out, unempl): 
+        out[:] = (unempl[-3] + unempl[-2] + unempl[-1]) / 3
 
 def initialize(context):
     """
@@ -35,7 +50,9 @@ def initialize(context):
     schedule_function(my_record_vars, date_rules.every_day(), time_rules.market_close())
      
     pipe = Pipeline()  
-    attach_pipeline(pipe, name='my_pipeline')  
+    attach_pipeline(pipe, name='my_pipeline')
+    pipe.add(CurrUnemplFactor(), 'curr_unempl')
+    pipe.add(MavgUnemplFactor(), 'mavg_unempl')
     
     # Screen for no utilities
     sector_code = morningstar.asset_classification.morningstar_sector_code.latest
@@ -70,6 +87,23 @@ def my_rebalance(context,data):
     """
     my_pipeline = pipeline_output('my_pipeline')
     
+    # Calculate unemployment indicator
+    currUnempl = my_pipeline['curr_unempl'][0]
+    mavgUnempl = my_pipeline['mavg_unempl'][0]
+    unemplUnfavorable = currUnempl > mavgUnempl
+    
+    # Calculate momentum indicator
+    spy = symbol('SPY')
+    mavgShort = data.history(spy, 'price', 50, '1d').mean()
+    mavgLong = data.history(spy, 'price', 200, '1d').mean()
+    momentumUnfavorable = mavgShort <= mavgLong
+    
+    # Sell everything if indicators unfavorable
+    if momentumUnfavorable and unemplUnfavorable:
+        for stock in context.portfolio.positions.iterkeys():
+            order_target(stock, 0)
+        return
+    
     # approixmate S&P 500
     snp_stocks = my_pipeline[
         (my_pipeline.country_id == "USA") & 
@@ -89,7 +123,7 @@ def my_rebalance(context,data):
     
     long_weight = 2.0 / float(len(context.security_list))  
     for long_stock in context.security_list:
-        order_target_percent(long_stock, long_weight)
+        order_target_percent(long_stock, long_weight)    
     pass
  
 def my_record_vars(context, data):
