@@ -9,7 +9,7 @@ Use is unauthorized without written permission
             (if cant fetch all stock div ylds in time, short circuit after 7, or perform fetching in separately scheduled func)
         ... or, see what other free quantopian providers
      2. Consider change momentum indicator to mavg(14) <= mavg(50)
-     3. Filter by actual S&P 500 
+     3. Filter by actual S&P 500 (prepare my own dataset and use fetcher)
      4. Graph realized returns on sale
 
 """
@@ -19,22 +19,22 @@ from quantopian.pipeline.classifiers.morningstar import Sector
 from quantopian.pipeline import CustomFactor
 from quantopian.pipeline.data import morningstar
 from quantopian.pipeline.data.quandl import fred_unrate
+import pandas as pd
  
 UTILITIES_SECTOR = 207
 
-class CurrUnemplFactor(CustomFactor):  
-    window_length = 1  
-    inputs = [fred_unrate.value]
+# For fetcher
+def pre_func(df):
+    df = df.iloc[::-1]
+    unemp = df['VALUE']
+    df['past_unemp'] = (pd.rolling_mean(unemp, 4) * 4 - unemp) / 3
+    df = df.bfill()
+    return df
 
-    def compute(self, today, assets, out, unempl): 
-        out[:] = unempl
-
-class MavgUnemplFactor(CustomFactor):  
-    window_length = 4  
-    inputs = [fred_unrate.value]
-
-    def compute(self, today, assets, out, unempl): 
-        out[:] = (unempl[-3] + unempl[-2] + unempl[-1]) / 3
+def post_func(df):
+    df = df.rename(columns={'VALUE': 'price'})
+    df = df.ffill()
+    return df
 
 def initialize(context):
     """
@@ -48,11 +48,14 @@ def initialize(context):
      
     # Record tracking variables at the end of each day.
     schedule_function(my_record_vars, date_rules.every_day(), time_rules.market_close())
-     
+    
+    # Fetch unemployment rate data
+    fetch_csv('http://www.quandl.com/api/v1/datasets/FRED/UNRATE.csv?trim_start=2007-12-03', date_column='DATE', symbol='unemp', usecols=['VALUE'], pre_func=pre_func, post_func=post_func, date_format='%Y-%m-%d')
+    
+    # Set up pipeline
     pipe = Pipeline()  
     attach_pipeline(pipe, name='my_pipeline')
-    pipe.add(CurrUnemplFactor(), 'curr_unempl')
-    pipe.add(MavgUnemplFactor(), 'mavg_unempl')
+    #pipe.add(CurrUnemplFactor(), 'curr_unempl')
     
     # Screen for no utilities
     sector_code = morningstar.asset_classification.morningstar_sector_code.latest
@@ -79,6 +82,7 @@ def initialize(context):
     pipe.set_screen(sector_filter & div_filter & mktCap_filter)
 
 def before_trading_start(context, data):  
+    log.info(get_datetime())
     pass
  
 def my_rebalance(context,data):  
@@ -88,9 +92,9 @@ def my_rebalance(context,data):
     my_pipeline = pipeline_output('my_pipeline')
     
     # Calculate unemployment indicator
-    currUnempl = my_pipeline['curr_unempl'][0]
-    mavgUnempl = my_pipeline['mavg_unempl'][0]
-    unemplUnfavorable = currUnempl > mavgUnempl
+    currUnempl = data['unemp'].price
+    pastUnempl = data['unemp'].past_unemp
+    unemplUnfavorable = currUnempl > pastUnempl
     
     # Calculate momentum indicator
     spy = symbol('SPY')
