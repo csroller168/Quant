@@ -3,14 +3,16 @@ Copyright Chris Short 2016
 Use is unauthorized without written permission
 
     # TODO
-     1. filter by 4% 5 yr avg. div yld
-        Either use custom factor (see https://www.quantopian.com/posts/fundamental-history-based-algo#5616e27ea8e03d7580000155)
-        ... or, query quandl for each stock
-            (if cant fetch all stock div ylds in time, short circuit after 7, or perform fetching in separately scheduled func)
-        ... or, see what other free quantopian providers
-     2. Consider change momentum indicator to mavg(14) <= mavg(50)
-     3. Filter by actual S&P 500 (prepare my own dataset and use fetcher)
-     4. Graph realized returns on sale
+     - Contest prep - eliminate fetcher
+     
+     Lower priority:
+     - filter by 4% 5 yr avg. div yld
+         - Use the free data here - good through Nov 2014 (https://www.quantopian.com/data/eventvestor/earnings_calendar)
+         - or try to use dividend yield I'm currently getting, and figure out how to get selected past values with a limited window (maybe hacking with some way to set the current datetime, or some way to call calculate() with amended today value)
+     - Consider change momentum indicator to mavg(14) <= mavg(50)
+     - Consider reduce leverage if one indicator says to sell but other doesn't
+     - Cleanup - replace deprecated methods and separate functions
+     - Filter by actual S&P 500 (prepare my own dataset and use fetcher - or static def for contest)
 
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
@@ -20,6 +22,7 @@ from quantopian.pipeline import CustomFactor
 from quantopian.pipeline.data import morningstar
 from quantopian.pipeline.data.quandl import fred_unrate
 import pandas as pd
+import numpy as np
  
 UTILITIES_SECTOR = 207
 
@@ -55,7 +58,6 @@ def initialize(context):
     # Set up pipeline
     pipe = Pipeline()  
     attach_pipeline(pipe, name='my_pipeline')
-    #pipe.add(CurrUnemplFactor(), 'curr_unempl')
     
     # Screen for no utilities
     sector_code = morningstar.asset_classification.morningstar_sector_code.latest
@@ -127,7 +129,10 @@ def my_rebalance(context,data):
     
     long_weight = 2.0 / float(len(context.security_list))  
     for long_stock in context.security_list:
-        order_target_percent(long_stock, long_weight)    
+        order_target_percent(long_stock, long_weight)
+    
+    # Take small short position for contest eligibility
+    order_target(sid(4118), -1)
     pass
  
 def my_record_vars(context, data):
