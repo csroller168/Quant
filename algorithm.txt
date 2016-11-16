@@ -1,0 +1,423 @@
+"""
+Copyright Chris Short 2016
+Use is unauthorized without written permission
+
+    # TODO
+     
+     Lower priority:
+     - filter by 4% 5 yr avg. div yld
+         - Use the free data here - good through Nov 2014 (https://www.quantopian.com/data/eventvestor/earnings_calendar)
+         - or try to use dividend yield I'm currently getting, and figure out how to get selected past values with a limited window (maybe hacking with some way to set the current datetime, or some way to call calculate() with amended today value)
+             or see pandas cheat sheet:  https://s3.amazonaws.com/quandl-static-content/Documents/Quandl+-+Pandas,+SciPy,+NumPy+Cheat+Sheet.pdf
+     - Consider change momentum indicator to mavg(14) <= mavg(50)
+     - Consider reduce leverage if one indicator says to sell but other doesn't
+     - Cleanup - replace deprecated methods and separate functions
+     - Filter by actual S&P 500 (prepare my own dataset and use fetcher - or static def for contest)
+
+"""
+from quantopian.algorithm import attach_pipeline, pipeline_output
+from quantopian.pipeline import Pipeline
+from quantopian.pipeline.classifiers.morningstar import Sector
+from quantopian.pipeline import CustomFactor
+from quantopian.pipeline.data import morningstar
+from quantopian.pipeline.data.quandl import fred_unrate
+import pandas as pd
+import numpy as np
+import datetime
+from datetime import date
+ 
+UTILITIES_SECTOR = 207
+
+unempl_df = pd.DataFrame()
+
+def initialize(context):
+    """
+    Called once at the start of the algorithm.
+    """   
+    # Rebalance monthly after unemployment rate announced,
+    # 1 minute after market open.
+    schedule_function(my_rebalance,
+                      date_rules.month_start(days_offset=6),
+                      time_rules.market_open(minutes=1))
+     
+    # Record tracking variables at the end of each day.
+    schedule_function(my_record_vars, date_rules.every_day(), time_rules.market_close())
+    
+    # Build unemployment rate data
+    context.unempl = build_unempl_collection()
+    
+    # Set up pipeline
+    pipe = Pipeline()  
+    attach_pipeline(pipe, name='my_pipeline')
+    
+    # Screen for no utilities
+    sector_code = morningstar.asset_classification.morningstar_sector_code.latest
+    sector_filter = (sector_code != UTILITIES_SECTOR)
+    
+    # Screen for high current dividend yield
+    div_yld = morningstar.valuation_ratios.dividend_yield.latest
+    pipe.add(div_yld, 'div_yld')
+    div_filter = (div_yld > .04)
+    
+    # Screen for approximation of S&P 500
+    mkt_cap = morningstar.valuation.market_cap.latest
+    country_id = morningstar.company_reference.country_id.latest
+    exchange_id = morningstar.company_reference.primary_exchange_id.latest
+    pipe.add(mkt_cap, 'mkt_cap')
+    pipe.add(country_id, 'country_id')
+    pipe.add(exchange_id, 'exchange_id')
+    mktCap_filter = (mkt_cap > 4000000000)
+    
+    # Screen for non-negative debt-equity ratio
+    debtToEquity = morningstar.operation_ratios.long_term_debt_equity_ratio.latest
+    pipe.add(debtToEquity, 'debtToEquity')
+    
+    pipe.set_screen(sector_filter & div_filter & mktCap_filter)
+
+def before_trading_start(context, data):
+    pass
+
+def is_unempl_unfavorable(unempl_df):
+    now = get_datetime()
+    idx = pd.Timestamp(str(now.year) + "-" + str(now.month) + "-" + str(now.day))
+    
+    currUnempl = unempl_df.loc[idx].rate
+    pastUnempl = unempl_df.loc[idx].past_avg
+    unemplUnfavorable = currUnempl > pastUnempl
+    return unemplUnfavorable
+    pass
+
+def my_rebalance(context,data):  
+    """
+    Filter pipeline output to security list
+    """
+    my_pipeline = pipeline_output('my_pipeline')
+    
+    # Calculate unemployment indicator
+    unemplUnfavorable = is_unempl_unfavorable(context.unempl)
+    
+    # Calculate momentum indicator
+    spy = symbol('SPY')
+    mavgShort = data.history(spy, 'price', 50, '1d').mean()
+    mavgLong = data.history(spy, 'price', 200, '1d').mean()
+    momentumUnfavorable = mavgShort <= mavgLong
+    
+    # Sell everything if indicators unfavorable
+    if momentumUnfavorable and unemplUnfavorable:
+        for stock in context.portfolio.positions.iterkeys():
+            order_target(stock, 0)
+        return
+    
+    # approixmate S&P 500
+    snp_stocks = my_pipeline[
+        (my_pipeline.country_id == "USA") & 
+        ((my_pipeline.exchange_id == "NAS") | 
+         (my_pipeline.exchange_id == "NYSE")) & 
+        (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:50]
+    
+    # Get top 7 by debt-equity ratio
+    context.security_list = snp_stocks.sort_values(by='debtToEquity',ascending=True).index[:7]
+    
+    """
+    Execute orders according to our schedule_function() timing. 
+    """
+    for stock in context.portfolio.positions.iterkeys():  
+        if stock not in context.security_list:  
+            order_target(stock, 0)
+    
+    long_weight = 2.0 / float(len(context.security_list))  
+    for long_stock in context.security_list:
+        order_target_percent(long_stock, long_weight)
+    
+    # Take small short position for contest eligibility
+    order_target(sid(4118), -1)
+    pass
+ 
+def my_record_vars(context, data):
+    """
+    Plot variables at the end of each day.
+    """
+    long_count = 0
+    short_count = 0
+    cash = context.portfolio.cash
+    
+    log_str = "holding: "
+    for position in context.portfolio.positions.itervalues():
+        if position.amount > 0:
+            long_count += 1
+            log_str += position.sid.symbol + ", "
+        if position.amount < 0:
+            short_count += 1
+            log_str += position.sid.symbol + "(short), "
+
+    # Plot the counts
+    record(num_long=long_count, num_short=short_count, cash=cash)
+    log.info(log_str)
+    pass
+ 
+def handle_data(context,data):
+    """
+    Called every minute.
+    TBD: Delete?
+    """
+    pass
+
+def build_unempl_collection():
+    unempl_list = [
+        5.3,
+        5.2,
+        5.2,
+        5.1,
+        4.9,
+        5,
+        4.9,
+        4.8,
+        4.9,
+        4.7,
+        4.6,
+        4.7,
+        4.6,
+        4.6,
+        4.7,
+        4.3,
+        4.4,
+        4.5,
+        4.5,
+        4.5,
+        4.6,
+        4.5,
+        4.4,
+        4.4,
+        4.3,
+        4.4,
+        4.2,
+        4.3,
+        4.2,
+        4.3,
+        4.3,
+        4.2,
+        4.2,
+        4.1,
+        4.1,
+        4,
+        4,
+        4.1,
+        4,
+        3.8,
+        4,
+        4,
+        4,
+        4.1,
+        3.9,
+        3.9,
+        3.9,
+        3.9,
+        4.2,
+        4.2,
+        4.3,
+        4.4,
+        4.3,
+        4.5,
+        4.6,
+        4.9,
+        5,
+        5.3,
+        5.5,
+        5.7,
+        5.7,
+        5.7,
+        5.7,
+        5.9,
+        5.8,
+        5.8,
+        5.8,
+        5.7,
+        5.7,
+        5.7,
+        5.9,
+        6,
+        5.8,
+        5.9,
+        5.9,
+        6,
+        6.1,
+        6.3,
+        6.2,
+        6.1,
+        6.1,
+        6,
+        5.8,
+        5.7,
+        5.7,
+        5.6,
+        5.8,
+        5.6,
+        5.6,
+        5.6,
+        5.5,
+        5.4,
+        5.4,
+        5.5,
+        5.4,
+        5.4,
+        5.3,
+        5.4,
+        5.2,
+        5.2,
+        5.1,
+        5,
+        5,
+        4.9,
+        5,
+        5,
+        5,
+        4.9,
+        4.7,
+        4.8,
+        4.7,
+        4.7,
+        4.6,
+        4.6,
+        4.7,
+        4.7,
+        4.5,
+        4.4,
+        4.5,
+        4.4,
+        4.6,
+        4.5,
+        4.4,
+        4.5,
+        4.4,
+        4.6,
+        4.7,
+        4.6,
+        4.7,
+        4.7,
+        4.7,
+        5,
+        5,
+        4.9,
+        5.1,
+        5,
+        5.4,
+        5.6,
+        5.8,
+        6.1,
+        6.1,
+        6.5,
+        6.8,
+        7.3,
+        7.8,
+        8.3,
+        8.7,
+        9,
+        9.4,
+        9.5,
+        9.5,
+        9.6,
+        9.8,
+        10,
+        9.9,
+        9.9,
+        9.8,
+        9.8,
+        9.9,
+        9.9,
+        9.6,
+        9.4,
+        9.4,
+        9.5,
+        9.5,
+        9.4,
+        9.8,
+        9.3,
+        9.1,
+        9,
+        9,
+        9.1,
+        9,
+        9.1,
+        9,
+        9,
+        9,
+        8.8,
+        8.6,
+        8.5,
+        8.3,
+        8.3,
+        8.2,
+        8.2,
+        8.2,
+        8.2,
+        8.2,
+        8.1,
+        7.8,
+        7.8,
+        7.7,
+        7.9,
+        8,
+        7.7,
+        7.5,
+        7.6,
+        7.5,
+        7.5,
+        7.3,
+        7.3,
+        7.3,
+        7.2,
+        6.9,
+        6.7,
+        6.6,
+        6.7,
+        6.7,
+        6.2,
+        6.2,
+        6.1,
+        6.2,
+        6.2,
+        6,
+        5.7,
+        5.8,
+        5.6,
+        5.7,
+        5.5,
+        5.5,
+        5.4,
+        5.5,
+        5.3,
+        5.3,
+        5.1,
+        5.1,
+        5,
+        5,
+        5,
+        4.9,
+        4.9,
+        5.0,
+        5.0,
+        4.7,
+        4.9,
+        4.9,
+        4.9,
+        5.0,
+        4.9
+    ]
+    
+    # Make dataframe with rates (deliberately offset by 1 month)
+    unempl_start = pd.Timestamp('19970201')
+    unempl_end = pd.Timestamp('20171231')
+    unempl_ix = pd.date_range(unempl_start, periods=len(unempl_list), freq='MS')
+    unempl_df = pd.DataFrame({"rate" : unempl_list}, index=unempl_ix)
+    
+    # Add rolling average to df
+    unemp_series = unempl_df['rate']
+    unempl_df['past_avg'] = (unemp_series.rolling(window=4,center=False).mean() * 4 - unemp_series) / 3
+    
+    # Fill monthly data for each day
+    unempl_ix = pd.date_range(start=unempl_start, end=unempl_end, freq='D')
+    unempl_df = unempl_df.reindex(unempl_ix, method='ffill')
+    unempl_df = unempl_df.bfill()
+    
+    return unempl_df
+    pass
