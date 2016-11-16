@@ -75,6 +75,21 @@ def initialize(context):
     pipe.set_screen(sector_filter & div_filter & mktCap_filter)
 
 def before_trading_start(context, data):
+    """
+    Filter pipeline output to security list
+    NOTE:  I'm doing this here since it takes a while and this apparently has a longer timeout than my_rebalance()
+    """
+    my_pipeline = pipeline_output('my_pipeline')
+    
+    # approixmate S&P 500
+    snp_stocks = my_pipeline[
+        (my_pipeline.country_id == "USA") & 
+        ((my_pipeline.exchange_id == "NAS") | 
+         (my_pipeline.exchange_id == "NYSE")) & 
+        (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:50]
+    
+    # Get top 7 by debt-equity ratio
+    context.security_list = snp_stocks.sort_values(by='debtToEquity',ascending=True).index[:7]
     pass
 
 def is_unempl_unfavorable(unempl_df):
@@ -87,12 +102,7 @@ def is_unempl_unfavorable(unempl_df):
     return unemplUnfavorable
     pass
 
-def my_rebalance(context,data):  
-    """
-    Filter pipeline output to security list
-    """
-    my_pipeline = pipeline_output('my_pipeline')
-    
+def my_rebalance(context,data):
     # Calculate unemployment indicator
     unemplUnfavorable = is_unempl_unfavorable(context.unempl)
     
@@ -107,17 +117,7 @@ def my_rebalance(context,data):
         for stock in context.portfolio.positions.iterkeys():
             order_target(stock, 0)
         return
-    
-    # approixmate S&P 500
-    snp_stocks = my_pipeline[
-        (my_pipeline.country_id == "USA") & 
-        ((my_pipeline.exchange_id == "NAS") | 
-         (my_pipeline.exchange_id == "NYSE")) & 
-        (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:50]
-    
-    # Get top 7 by debt-equity ratio
-    context.security_list = snp_stocks.sort_values(by='debtToEquity',ascending=True).index[:7]
-    
+        
     """
     Execute orders according to our schedule_function() timing. 
     """
