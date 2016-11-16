@@ -43,6 +43,12 @@ def initialize(context):
     # Record tracking variables at the end of each day.
     schedule_function(my_record_vars, date_rules.every_day(), time_rules.market_close())
     
+    # Make a single trade at the launch of the algo
+    context.algo_started = False
+    schedule_function(my_rebalance_once,
+                      date_rules.every_day(),
+                      time_rules.market_open(minutes=1))
+    
     # Build unemployment rate data
     context.unempl = build_unempl_collection()
     
@@ -73,6 +79,7 @@ def initialize(context):
     pipe.add(debtToEquity, 'debtToEquity')
     
     pipe.set_screen(sector_filter & div_filter & mktCap_filter)
+    pass
 
 def before_trading_start(context, data):
     """
@@ -131,6 +138,12 @@ def my_rebalance(context,data):
     
     # Take small short position for contest eligibility
     order_target(sid(4118), -1)
+    pass
+
+def my_rebalance_once(context, data):
+    if not context.algo_started:
+        context.algo_started = True
+        my_rebalance(context,data)
     pass
  
 def my_record_vars(context, data):
