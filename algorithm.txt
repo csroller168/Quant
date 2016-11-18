@@ -18,17 +18,11 @@ Use is unauthorized without written permission
 from quantopian.algorithm import attach_pipeline, pipeline_output
 from quantopian.pipeline import Pipeline
 from quantopian.pipeline.classifiers.morningstar import Sector
-from quantopian.pipeline import CustomFactor
 from quantopian.pipeline.data import morningstar
-from quantopian.pipeline.data.quandl import fred_unrate
 import pandas as pd
 import numpy as np
-import datetime
-from datetime import date
  
 UTILITIES_SECTOR = 207
-
-unempl_df = pd.DataFrame()
 
 def initialize(context):
     """
@@ -200,7 +194,7 @@ def build_unempl_collection():
     
     # Make dataframe with rates (deliberately offset by 1 month)
     unempl_start = pd.Timestamp('19970201')
-    unempl_end = pd.Timestamp('20171231')
+    unempl_end = pd.Timestamp('20181231')
     unempl_ix = pd.date_range(unempl_start, periods=len(unempl_list), freq='MS')
     unempl_df = pd.DataFrame({"rate" : unempl_list}, index=unempl_ix)
     
