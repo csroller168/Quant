@@ -3,16 +3,20 @@ Copyright Chris Short 2016
 Use is unauthorized without written permission
 
     # TODO
+    - Contest optimization
+        - Get beta between -0.3 and 0.3
+        - Keep leverage under 3 in backtesting
+        - Reconsider hedging strategy
      
      Lower priority:
      - filter by 4% 5 yr avg. div yld
-         - Use the free data here - good through Nov 2014 (https://www.quantopian.com/data/eventvestor/earnings_calendar)
-         - or try to use dividend yield I'm currently getting, and figure out how to get selected past values with a limited window (maybe hacking with some way to set the current datetime, or some way to call calculate() with amended today value)
-             or see pandas cheat sheet:  https://s3.amazonaws.com/quandl-static-content/Documents/Quandl+-+Pandas,+SciPy,+NumPy+Cheat+Sheet.pdf
+         - or try to use dividend yield I'm currently getting, and figure out how to get selected past values with a limited window (maybe hacking with some way to set the current datetime, or some way to call calculate() with amended today value...)
+            def compute(self, today, assets, out, close):
+                today = today - 1 year
+                # repeat above for 4 custom factors for each year back
+                out[:] = something...
      - Consider change momentum indicator to mavg(14) <= mavg(50)
      - Consider reduce leverage if one indicator says to sell but other doesn't
-     - Cleanup - replace deprecated methods and separate functions
-     - Filter by actual S&P 500 (prepare my own dataset and use fetcher - or static def for contest)
 
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
