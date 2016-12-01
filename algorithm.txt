@@ -57,6 +57,7 @@ def initialize(context):
     
     # Build unemployment rate data
     context.unempl = [99.0, 99.0, 99.0, 99.0, 99.0]
+    context.unemplSet = False
     
     # Set up pipeline
     pipe = Pipeline()  
@@ -98,8 +99,11 @@ def before_trading_start(context, data):
     my_pipeline = pipeline_output('my_pipeline')
     
     # Cache unemployment data once per month
-    if get_datetime().day == 6:
+    if get_datetime().day < 2:
+        context.unemplSet = False
+    if get_datetime().day >= 2 and context.unemplSet == False:
         context.unempl.append(my_pipeline['unempl'][0])
+        context.unemplSet = True
     
     # approixmate S&P 500
     snp_stocks = my_pipeline[
