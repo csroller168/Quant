@@ -55,14 +55,17 @@ def initialize(context):
                       date_rules.every_day(),
                       time_rules.market_open(minutes=1))
     
-    # Build unemployment rate data
+    # Initialize unemployment rate variables
     context.unempl = [99.0, 99.0, 99.0, 99.0, 99.0]
     context.unemplSet = False
     
-    # Set up pipeline
-    pipe = Pipeline()  
-    attach_pipeline(pipe, name='my_pipeline')
-    
+    # Set up long pipeline
+    longPipe = Pipeline()  
+    attach_pipeline(longPipe, name='long_pipeline')
+    build_long_pipeline(longPipe)
+
+
+def build_long_pipeline(pipe):
     # Add employment data
     pipe.add(CurrUnemplFactor(), 'unempl')
     
@@ -96,29 +99,29 @@ def before_trading_start(context, data):
     Filter pipeline output to security list
     NOTE:  I'm doing this here since it takes a while and this apparently has a longer timeout than my_rebalance()
     """
-    my_pipeline = pipeline_output('my_pipeline')
+    long_pipeline = pipeline_output('long_pipeline')
     
     # Cache unemployment data once per month
     if get_datetime().day < 2:
         context.unemplSet = False
     if get_datetime().day >= 2 and context.unemplSet == False:
-        context.unempl.append(my_pipeline['unempl'][0])
+        context.unempl.append(long_pipeline['unempl'][0])
         context.unemplSet = True
     
     # approixmate S&P 500
-    snp_stocks = my_pipeline[
-        (my_pipeline.country_id == "USA") & 
-        ((my_pipeline.exchange_id == "NAS") | 
-         (my_pipeline.exchange_id == "NYSE")) & 
-        (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:50]
+    snp_stocks = long_pipeline[
+        (long_pipeline.country_id == "USA") & 
+        ((long_pipeline.exchange_id == "NAS") | 
+         (long_pipeline.exchange_id == "NYSE")) & 
+        (data.can_trade(long_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:50]
     
     # Get top 7 by debt-equity ratio
     context.security_list = snp_stocks.sort_values(by='debtToEquity',ascending=True).index[:7]
     pass
 
 def is_unempl_unfavorable(unempl):
-    currUnempl = unempl[-2]
-    pastUnempl = (unempl[-5] + unempl[-4] + unempl[-3]) / 3
+    currUnempl = unempl[-1]
+    pastUnempl = (unempl[-4] + unempl[-3] + unempl[-2]) / 3
     unemplUnfavorable = currUnempl > pastUnempl
     return unemplUnfavorable
     pass
@@ -139,7 +142,11 @@ def my_rebalance(context,data):
         for stock in context.portfolio.positions.iterkeys():
             order_target(stock, 0)
         return
-        
+    
+    # Take small short position for contest eligibility
+    order_target(sid(4118), -1)
+    pass
+    
     """
     Execute orders according to our schedule_function() timing. 
     """
@@ -150,10 +157,6 @@ def my_rebalance(context,data):
     long_weight = 2.0 / float(len(context.security_list))  
     for long_stock in context.security_list:
         order_target_percent(long_stock, long_weight)
-    
-    # Take small short position for contest eligibility
-    order_target(sid(4118), -1)
-    pass
 
 def my_rebalance_once(context, data):
     if not context.algo_started:
@@ -184,11 +187,4 @@ def my_record_vars(context, data):
     # Plot the counts
     record(num_long=long_count, num_short=short_count, currUnempl=currUnempl, pastUnempl=pastUnempl)
     log.info(log_str)
-    pass
- 
-def handle_data(context,data):
-    """
-    Called every minute.
-    TBD: Delete?
-    """
     pass
