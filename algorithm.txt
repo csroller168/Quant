@@ -4,9 +4,9 @@ Use is unauthorized without written permission
 
     # TODO
     - Contest optimization
-        - Get beta between -0.3 and 0.3
+        - Execute trade to targets daily, or figure out how to make orders not expire
+        - Implement long/short equity hedging strategy - rank "worst" equities (possibly in separate pipeline) and short bottom 7
         - Keep leverage under 3 in backtesting
-        - Reconsider hedging strategy based on low performers (low cap and high debt/equity?)
      
      Lower priority:
      - filter by 4% 5 yr avg. div yld
