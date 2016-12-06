@@ -4,8 +4,11 @@ Use is unauthorized without written permission
 
     # TODO
     - Contest optimization
-        - Execute trade to targets daily, or figure out how to make orders not expire
         - Implement long/short equity hedging strategy - rank "worst" equities (possibly in separate pipeline) and short bottom 7
+        - Short SPY by some amount always
+            - if no unfavorable indicators, <small>%
+            - if one unfavorable indicator, <medium>%
+            - if two unfavorable indicators, 100%
         - Keep leverage under 3 in backtesting
      
      Lower priority:
@@ -55,6 +58,11 @@ def initialize(context):
                       date_rules.every_day(),
                       time_rules.market_open(minutes=1))
     
+    # Try to execute every day to cover unexecuted orders
+    schedule_function(execute_orders,
+                      date_rules.every_day(),
+                      time_rules.market_open(minutes=5))
+    
     # Initialize unemployment rate variables
     context.unempl = [99.0, 99.0, 99.0, 99.0, 99.0]
     context.unemplSet = False
@@ -92,7 +100,6 @@ def build_long_pipeline(pipe):
     pipe.add(debtToEquity, 'debtToEquity')
     
     pipe.set_screen(sector_filter & div_filter & mktCap_filter)
-    pass
 
 def before_trading_start(context, data):
     """
@@ -117,39 +124,34 @@ def before_trading_start(context, data):
     
     # Get top 7 by debt-equity ratio
     context.security_list = snp_stocks.sort_values(by='debtToEquity',ascending=True).index[:7]
-    pass
 
 def is_unempl_unfavorable(unempl):
     currUnempl = unempl[-1]
     pastUnempl = (unempl[-4] + unempl[-3] + unempl[-2]) / 3
     unemplUnfavorable = currUnempl > pastUnempl
     return unemplUnfavorable
-    pass
 
 def my_rebalance(context,data):
     
     # Calculate unemployment indicator
-    unemplUnfavorable = is_unempl_unfavorable(context.unempl)
+    context.unemplUnfavorable = is_unempl_unfavorable(context.unempl)
     
     # Calculate momentum indicator
     spy = symbol('SPY')
     mavgShort = data.history(spy, 'price', 50, '1d').mean()
     mavgLong = data.history(spy, 'price', 200, '1d').mean()
-    momentumUnfavorable = mavgShort <= mavgLong
+    context.momentumUnfavorable = mavgShort <= mavgLong
+
+def execute_orders(context,data):
+    # Take small short position for contest eligibility
+    order_target(sid(4118), -1)
     
     # Sell everything if indicators unfavorable
-    if momentumUnfavorable and unemplUnfavorable:
+    if context.momentumUnfavorable and context.unemplUnfavorable:
         for stock in context.portfolio.positions.iterkeys():
             order_target(stock, 0)
         return
     
-    # Take small short position for contest eligibility
-    order_target(sid(4118), -1)
-    pass
-    
-    """
-    Execute orders according to our schedule_function() timing. 
-    """
     for stock in context.portfolio.positions.iterkeys():  
         if stock not in context.security_list:  
             order_target(stock, 0)
@@ -162,7 +164,6 @@ def my_rebalance_once(context, data):
     if not context.algo_started:
         context.algo_started = True
         my_rebalance(context,data)
-    pass
  
 def my_record_vars(context, data):
     """
@@ -170,7 +171,6 @@ def my_record_vars(context, data):
     """
     long_count = 0
     short_count = 0
-    cash = context.portfolio.cash
     unempl = context.unempl
     currUnempl = unempl[-1]
     pastUnempl = (unempl[-4] + unempl[-3] + unempl[-2]) / 3
@@ -187,4 +187,3 @@ def my_record_vars(context, data):
     # Plot the counts
     record(num_long=long_count, num_short=short_count, currUnempl=currUnempl, pastUnempl=pastUnempl)
     log.info(log_str)
-    pass
