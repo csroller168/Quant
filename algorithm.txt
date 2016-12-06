@@ -4,12 +4,7 @@ Use is unauthorized without written permission
 
     # TODO
     - Contest optimization
-        - Implement long/short equity hedging strategy - rank "worst" equities (possibly in separate pipeline) and short bottom 7
-        - Short SPY by some amount always
-            - if no unfavorable indicators, <small>%
-            - if one unfavorable indicator, <medium>%
-            - if two unfavorable indicators, 100%
-        - Keep leverage under 3 in backtesting
+        - Tune leverage and beta
      
      Lower priority:
      - filter by 4% 5 yr avg. div yld
@@ -143,8 +138,13 @@ def my_rebalance(context,data):
     context.momentumUnfavorable = mavgShort <= mavgLong
 
 def execute_orders(context,data):
-    # Take small short position for contest eligibility
-    order_target(sid(4118), -1)
+    # Short SPY according to indicators
+    if context.momentumUnfavorable and context.unemplUnfavorable:
+        order_target_percent(symbol('SPY'), -0.07)
+    elif context.momentumUnfavorable or context.unemplUnfavorable:
+        order_target_percent(symbol('SPY'), -0.05)
+    else:
+        order_target_percent(symbol('SPY'), -0.005)
     
     # Sell everything if indicators unfavorable
     if context.momentumUnfavorable and context.unemplUnfavorable:
