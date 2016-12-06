@@ -138,18 +138,22 @@ def my_rebalance(context,data):
     context.momentumUnfavorable = mavgShort <= mavgLong
 
 def execute_orders(context,data):
-    # Short SPY according to indicators
-    if context.momentumUnfavorable and context.unemplUnfavorable:
-        order_target_percent(symbol('SPY'), -0.07)
-    elif context.momentumUnfavorable or context.unemplUnfavorable:
-        order_target_percent(symbol('SPY'), -0.05)
-    else:
-        order_target_percent(symbol('SPY'), -0.005)
-    
+    sell_everything = False
     # Sell everything if indicators unfavorable
     if context.momentumUnfavorable and context.unemplUnfavorable:
         for stock in context.portfolio.positions.iterkeys():
             order_target(stock, 0)
+        sell_everything = True
+    
+    # Short SPY according to indicators
+    if context.momentumUnfavorable and context.unemplUnfavorable:
+        order_target_percent(symbol('SPY'), -0.65)
+    elif context.momentumUnfavorable or context.unemplUnfavorable:
+        order_target_percent(symbol('SPY'), -0.35)
+    else:
+        order_target_percent(symbol('SPY'), -0.20)
+    
+    if sell_everything:
         return
     
     for stock in context.portfolio.positions.iterkeys():  
@@ -171,9 +175,12 @@ def my_record_vars(context, data):
     """
     long_count = 0
     short_count = 0
+    leverage = context.account.leverage
     unempl = context.unempl
     currUnempl = unempl[-1]
     pastUnempl = (unempl[-4] + unempl[-3] + unempl[-2]) / 3
+    if pastUnempl > 10:
+        pastUnempl = 0
     
     log_str = "holding: "
     for position in context.portfolio.positions.itervalues():
@@ -185,5 +192,5 @@ def my_record_vars(context, data):
             log_str += position.sid.symbol + "(short), "
 
     # Plot the counts
-    record(num_long=long_count, num_short=short_count, currUnempl=currUnempl, pastUnempl=pastUnempl)
+    record(num_long=long_count, num_short=short_count, currUnempl=currUnempl, pastUnempl=pastUnempl, leverage=leverage)
     log.info(log_str)
