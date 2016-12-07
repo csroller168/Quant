@@ -4,7 +4,7 @@ Use is unauthorized without written permission
 
     # TODO
     - Contest optimization
-        - Tune leverage and beta
+        - implement short pipeine
      
      Lower priority:
      - filter by 4% 5 yr avg. div yld
@@ -147,11 +147,11 @@ def execute_orders(context,data):
     
     # Short SPY according to indicators
     if context.momentumUnfavorable and context.unemplUnfavorable:
-        order_target_percent(symbol('SPY'), -0.65)
+        order_target_percent(symbol('SPY'), -1.0)
     elif context.momentumUnfavorable or context.unemplUnfavorable:
-        order_target_percent(symbol('SPY'), -0.35)
+        order_target_percent(symbol('SPY'), -2.1)
     else:
-        order_target_percent(symbol('SPY'), -0.20)
+        order_target_percent(symbol('SPY'), -2.1)
     
     if sell_everything:
         return
@@ -160,7 +160,7 @@ def execute_orders(context,data):
         if stock not in context.security_list:  
             order_target(stock, 0)
     
-    long_weight = 2.0 / float(len(context.security_list))  
+    long_weight = 1.8 / float(len(context.security_list))  
     for long_stock in context.security_list:
         order_target_percent(long_stock, long_weight)
 
