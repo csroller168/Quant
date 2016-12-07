@@ -3,10 +3,13 @@ Copyright Chris Short 2016
 Use is unauthorized without written permission
 
     # TODO
-    - Contest optimization
-        - implement short pipeine
+    - Contest eligibility
+        - Fix leverage
+        - Fix numShort dropping to zero
+        - Implement new short strategy to reduce beta (see lectures possibly)
      
      Lower priority:
+     - consider vary SPY short % with real time beta
      - filter by 4% 5 yr avg. div yld
          - or try to use dividend yield I'm currently getting, and figure out how to get selected past values with a limited window (maybe hacking with some way to set the current datetime, or some way to call calculate() with amended today value...)
             def compute(self, today, assets, out, close):
@@ -66,7 +69,6 @@ def initialize(context):
     longPipe = Pipeline()  
     attach_pipeline(longPipe, name='long_pipeline')
     build_long_pipeline(longPipe)
-
 
 def build_long_pipeline(pipe):
     # Add employment data
@@ -147,11 +149,11 @@ def execute_orders(context,data):
     
     # Short SPY according to indicators
     if context.momentumUnfavorable and context.unemplUnfavorable:
-        order_target_percent(symbol('SPY'), -1.0)
+        order_target_percent(symbol('SPY'), -0.7)
     elif context.momentumUnfavorable or context.unemplUnfavorable:
-        order_target_percent(symbol('SPY'), -2.1)
+        order_target_percent(symbol('SPY'), -0.5)
     else:
-        order_target_percent(symbol('SPY'), -2.1)
+        order_target_percent(symbol('SPY'), -0.3)
     
     if sell_everything:
         return
