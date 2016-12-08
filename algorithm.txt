@@ -4,9 +4,8 @@ Use is unauthorized without written permission
 
     # TODO
     - Contest eligibility
-        - Fix leverage
-        - Fix numShort dropping to zero
         - Implement new short strategy to reduce beta (see lectures possibly)
+        - Make static unempl list and build context.unempl with past data on init
      
      Lower priority:
      - consider vary SPY short % with real time beta
@@ -66,11 +65,11 @@ def initialize(context):
     context.unemplSet = False
     
     # Set up long pipeline
-    longPipe = Pipeline()  
-    attach_pipeline(longPipe, name='long_pipeline')
-    build_long_pipeline(longPipe)
+    pipe = Pipeline()  
+    attach_pipeline(pipe, name='my_pipeline')
+    build_pipeline(pipe)
 
-def build_long_pipeline(pipe):
+def build_pipeline(pipe):
     # Add employment data
     pipe.add(CurrUnemplFactor(), 'unempl')
     
@@ -103,21 +102,21 @@ def before_trading_start(context, data):
     Filter pipeline output to security list
     NOTE:  I'm doing this here since it takes a while and this apparently has a longer timeout than my_rebalance()
     """
-    long_pipeline = pipeline_output('long_pipeline')
+    my_pipeline = pipeline_output('my_pipeline')
     
     # Cache unemployment data once per month
     if get_datetime().day < 2:
         context.unemplSet = False
     if get_datetime().day >= 2 and context.unemplSet == False:
-        context.unempl.append(long_pipeline['unempl'][0])
+        context.unempl.append(my_pipeline['unempl'][0])
         context.unemplSet = True
     
     # approixmate S&P 500
-    snp_stocks = long_pipeline[
-        (long_pipeline.country_id == "USA") & 
-        ((long_pipeline.exchange_id == "NAS") | 
-         (long_pipeline.exchange_id == "NYSE")) & 
-        (data.can_trade(long_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:50]
+    snp_stocks = my_pipeline[
+        (my_pipeline.country_id == "USA") & 
+        ((my_pipeline.exchange_id == "NAS") | 
+         (my_pipeline.exchange_id == "NYSE")) & 
+        (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:50]
     
     # Get top 7 by debt-equity ratio
     context.security_list = snp_stocks.sort_values(by='debtToEquity',ascending=True).index[:7]
@@ -159,7 +158,7 @@ def execute_orders(context,data):
         return
     
     for stock in context.portfolio.positions.iterkeys():  
-        if stock not in context.security_list:  
+        if stock not in context.security_list and stock.symbol != 'SPY':  
             order_target(stock, 0)
     
     long_weight = 1.8 / float(len(context.security_list))  
@@ -192,7 +191,7 @@ def my_record_vars(context, data):
         if position.amount < 0:
             short_count += 1
             log_str += position.sid.symbol + "(short), "
-
+    
     # Plot the counts
     record(num_long=long_count, num_short=short_count, currUnempl=currUnempl, pastUnempl=pastUnempl, leverage=leverage)
     log.info(log_str)
