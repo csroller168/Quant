@@ -5,9 +5,10 @@ Use is unauthorized without written permission
     # TODO
     - Contest eligibility
         - Implement new short strategy to reduce beta (see lectures possibly)
-        - Make static unempl list and build context.unempl with past data on init
+        - look into using base_universe per this example:  https://www.quantopian.com/posts/optimize-api-now-available-in-algorithms
      
      Lower priority:
+     - adjust SPY short% during total pullout - optimize beta and drawdown
      - consider vary SPY short % with real time beta
      - filter by 4% 5 yr avg. div yld
          - or try to use dividend yield I'm currently getting, and figure out how to get selected past values with a limited window (maybe hacking with some way to set the current datetime, or some way to call calculate() with amended today value...)
@@ -61,7 +62,7 @@ def initialize(context):
                       time_rules.market_open(minutes=5))
     
     # Initialize unemployment rate variables
-    context.unempl = [99.0, 99.0, 99.0, 99.0, 99.0]
+    context.unempl = build_unempl_collection()
     context.unemplSet = False
     
     # Set up long pipeline
@@ -105,9 +106,9 @@ def before_trading_start(context, data):
     my_pipeline = pipeline_output('my_pipeline')
     
     # Cache unemployment data once per month
-    if get_datetime().day < 2:
+    if get_datetime().day < 6:
         context.unemplSet = False
-    if get_datetime().day >= 2 and context.unemplSet == False:
+    if get_datetime().day >= 6 and context.unemplSet == False:
         context.unempl.append(my_pipeline['unempl'][0])
         context.unemplSet = True
     
@@ -148,7 +149,7 @@ def execute_orders(context,data):
     
     # Short SPY according to indicators
     if context.momentumUnfavorable and context.unemplUnfavorable:
-        order_target_percent(symbol('SPY'), -0.7)
+        order_target_percent(symbol('SPY'), -0.8)
     elif context.momentumUnfavorable or context.unemplUnfavorable:
         order_target_percent(symbol('SPY'), -0.5)
     else:
@@ -195,3 +196,34 @@ def my_record_vars(context, data):
     # Plot the counts
     record(num_long=long_count, num_short=short_count, currUnempl=currUnempl, pastUnempl=pastUnempl, leverage=leverage)
     log.info(log_str)
+
+def build_unempl_collection():
+    unempl_list = [
+        5.3, 5.2, 5.2, 5.1, 4.9, 5, 4.9, 4.8, 4.9, 4.7, 4.6, 4.7,
+        4.6, 4.6, 4.7, 4.3, 4.4, 4.5, 4.5, 4.5, 4.6, 4.5, 4.4, 4.4,
+        4.3, 4.4, 4.2, 4.3, 4.2, 4.3, 4.3, 4.2, 4.2, 4.1, 4.1, 4,
+        4, 4.1, 4, 3.8, 4, 4, 4, 4.1, 3.9, 3.9, 3.9, 3.9, 4.2, 4.2,
+        4.3, 4.4, 4.3, 4.5, 4.6, 4.9, 5, 5.3, 5.5, 5.7, 5.7, 5.7,
+        5.7, 5.9, 5.8, 5.8, 5.8, 5.7, 5.7, 5.7, 5.9, 6, 5.8, 5.9,
+        5.9, 6, 6.1, 6.3, 6.2, 6.1, 6.1, 6, 5.8, 5.7, 5.7, 5.6, 5.8,
+        5.6, 5.6, 5.6, 5.5, 5.4, 5.4, 5.5, 5.4, 5.4, 5.3, 5.4, 5.2,
+        5.2, 5.1, 5, 5, 4.9, 5, 5, 5, 4.9, 4.7, 4.8, 4.7, 4.7, 4.6,
+        4.6, 4.7, 4.7, 4.5, 4.4, 4.5, 4.4, 4.6, 4.5, 4.4, 4.5, 4.4,
+        4.6, 4.7, 4.6, 4.7, 4.7, 4.7, 5, 5, 4.9, 5.1, 5, 5.4, 5.6,
+        5.8, 6.1, 6.1, 6.5, 6.8, 7.3, 7.8, 8.3, 8.7, 9, 9.4, 9.5,
+        9.5, 9.6, 9.8, 10, 9.9, 9.9, 9.8, 9.8, 9.9, 9.9, 9.6, 9.4,
+        9.4, 9.5, 9.5, 9.4, 9.8, 9.3, 9.1, 9, 9, 9.1, 9, 9.1, 9, 9,
+        9, 8.8, 8.6, 8.5, 8.3, 8.3, 8.2, 8.2, 8.2, 8.2, 8.2, 8.1,
+        7.8, 7.8, 7.7, 7.9, 8, 7.7, 7.5, 7.6, 7.5, 7.5, 7.3, 7.3,
+        7.3, 7.2, 6.9, 6.7, 6.6, 6.7, 6.7, 6.2, 6.2, 6.1, 6.2, 6.2,
+        6, 5.7, 5.8, 5.6, 5.7, 5.5, 5.5, 5.4, 5.5, 5.3, 5.3, 5.1,
+        5.1, 5, 5, 5, 4.9, 4.9, 5.0, 5.0, 4.7, 4.9, 4.9, 4.9, 5.0, 
+        4.9, 4.6]
+    
+    # Strip future values
+    now = get_datetime()
+    monthOffset = ((now.year - 1997) * 12) + now.month - 1
+    unempl_list = unempl_list[:monthOffset]
+    
+    return unempl_list
+
