@@ -3,9 +3,7 @@ Copyright Chris Short 2016
 Use is unauthorized without written permission
 
     # TODO
-    - Contest eligibility
-        - Implement new short strategy to reduce beta (see lectures possibly)
-        - look into using base_universe per this example:  https://www.quantopian.com/posts/optimize-api-now-available-in-algorithms
+    - Debug num shorts
      
      Lower priority:
      - adjust SPY short% during total pullout - optimize beta and drawdown
@@ -25,6 +23,7 @@ from quantopian.pipeline import Pipeline, CustomFactor
 from quantopian.pipeline.classifiers.morningstar import Sector
 from quantopian.pipeline.data import morningstar
 from quantopian.pipeline.data.quandl import fred_unrate
+import math
 import pandas as pd
 import numpy as np
  
@@ -81,7 +80,6 @@ def build_pipeline(pipe):
     # Screen for high current dividend yield
     div_yld = morningstar.valuation_ratios.dividend_yield.latest
     pipe.add(div_yld, 'div_yld')
-    div_filter = (div_yld > .04)
     
     # Screen for approximation of S&P 500
     mkt_cap = morningstar.valuation.market_cap.latest
@@ -90,13 +88,12 @@ def build_pipeline(pipe):
     pipe.add(mkt_cap, 'mkt_cap')
     pipe.add(country_id, 'country_id')
     pipe.add(exchange_id, 'exchange_id')
-    mktCap_filter = (mkt_cap > 4000000000)
     
     # Screen for non-negative debt-equity ratio
     debtToEquity = morningstar.operation_ratios.long_term_debt_equity_ratio.latest
     pipe.add(debtToEquity, 'debtToEquity')
     
-    pipe.set_screen(sector_filter & div_filter & mktCap_filter)
+    pipe.set_screen(sector_filter)
 
 def before_trading_start(context, data):
     """
@@ -112,15 +109,24 @@ def before_trading_start(context, data):
         context.unempl.append(my_pipeline['unempl'][0])
         context.unemplSet = True
     
-    # approixmate S&P 500
-    snp_stocks = my_pipeline[
+    # Build long and short stock lists
+    long_stocks = my_pipeline[
         (my_pipeline.country_id == "USA") & 
         ((my_pipeline.exchange_id == "NAS") | 
-         (my_pipeline.exchange_id == "NYSE")) & 
-        (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:50]
+         (my_pipeline.exchange_id == "NYSE")) &
+        (my_pipeline.div_yld > .04) &
+        (my_pipeline.mkt_cap > 4000000000) &
+        (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:100]
+    context.security_list = long_stocks.sort_values(by='debtToEquity', ascending=True).index[:7]
     
-    # Get top 7 by debt-equity ratio
-    context.security_list = snp_stocks.sort_values(by='debtToEquity',ascending=True).index[:7]
+    short_stocks = my_pipeline[
+        (my_pipeline.country_id == "USA") & 
+        ((my_pipeline.exchange_id == "NAS") | 
+         (my_pipeline.exchange_id == "NYSE")) &
+        ~(my_pipeline.div_yld > 0.0) &
+        (my_pipeline.mkt_cap < 50000000) &
+        (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:100]
+    context.short_security_list = short_stocks.sort_values(by='debtToEquity', ascending=False).index[:7]
 
 def is_unempl_unfavorable(unempl):
     currUnempl = unempl[-1]
@@ -140,8 +146,9 @@ def my_rebalance(context,data):
     context.momentumUnfavorable = mavgShort <= mavgLong
 
 def execute_orders(context,data):
+    
+    # Cover everything if indicators unfavorable
     sell_everything = False
-    # Sell everything if indicators unfavorable
     if context.momentumUnfavorable and context.unemplUnfavorable:
         for stock in context.portfolio.positions.iterkeys():
             order_target(stock, 0)
@@ -158,13 +165,21 @@ def execute_orders(context,data):
     if sell_everything:
         return
     
+    # Cover stocks no longer in list
     for stock in context.portfolio.positions.iterkeys():  
-        if stock not in context.security_list and stock.symbol != 'SPY':  
+        if stock not in context.security_list and \
+            stock not in context.short_security_list and \
+            stock.symbol != 'SPY':  
             order_target(stock, 0)
     
+    # Rebalance
     long_weight = 1.8 / float(len(context.security_list))  
+    short_weight = -0.7 / float(len(context.security_list)) 
     for long_stock in context.security_list:
         order_target_percent(long_stock, long_weight)
+    
+    for short_stock in context.short_security_list:
+        order_target_percent(short_stock, short_weight)
 
 def my_rebalance_once(context, data):
     if not context.algo_started:
