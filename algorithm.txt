@@ -3,7 +3,7 @@ Copyright Chris Short 2016
 Use is unauthorized without written permission
 
     # TODO
-    - Debug num shorts
+    - Fix short algorithm & leverage
      
      Lower priority:
      - adjust SPY short% during total pullout - optimize beta and drawdown
@@ -28,6 +28,7 @@ import pandas as pd
 import numpy as np
  
 UTILITIES_SECTOR = 207
+REBALANCE_DAY = 6
 
 class CurrUnemplFactor(CustomFactor):
     window_length = 1
@@ -40,20 +41,13 @@ def initialize(context):
     """
     Called once at the start of the algorithm.
     """   
-    # Rebalance monthly after unemployment rate announced,
-    # 1 minute after market open.
-    schedule_function(my_rebalance,
-                      date_rules.month_start(days_offset=6),
+    # Recalculate unemployment indicator once per month
+    schedule_function(recalc_unempl,
+                      date_rules.month_start(days_offset=REBALANCE_DAY),
                       time_rules.market_open(minutes=1))
      
     # Record tracking variables at the end of each day.
-    schedule_function(my_record_vars, date_rules.every_day(), time_rules.market_close())
-    
-    # Make a single trade at the launch of the algo
-    context.algo_started = False
-    schedule_function(my_rebalance_once,
-                      date_rules.every_day(),
-                      time_rules.market_open(minutes=1))
+    schedule_function(record_vars, date_rules.every_day(), time_rules.market_close())
     
     # Try to execute every day to cover unexecuted orders
     schedule_function(execute_orders,
@@ -63,6 +57,8 @@ def initialize(context):
     # Initialize unemployment rate variables
     context.unempl = build_unempl_collection()
     context.unemplSet = False
+    context.momentumUnfavorable = False
+    context.unemplUnfavorable = False
     
     # Set up long pipeline
     pipe = Pipeline()  
@@ -79,10 +75,14 @@ def build_pipeline(pipe):
     
     # Screen for high current dividend yield
     div_yld = morningstar.valuation_ratios.dividend_yield.latest
+    high_div_filter = (div_yld > .04)
+    no_div_filter = ~(div_yld > 0.0)
     pipe.add(div_yld, 'div_yld')
     
     # Screen for approximation of S&P 500
     mkt_cap = morningstar.valuation.market_cap.latest
+    large_cap_filter = (mkt_cap > 4000000000)
+    #small_cap_filter = (mkt_cap < 50000000)
     country_id = morningstar.company_reference.country_id.latest
     exchange_id = morningstar.company_reference.primary_exchange_id.latest
     pipe.add(mkt_cap, 'mkt_cap')
@@ -93,40 +93,42 @@ def build_pipeline(pipe):
     debtToEquity = morningstar.operation_ratios.long_term_debt_equity_ratio.latest
     pipe.add(debtToEquity, 'debtToEquity')
     
-    pipe.set_screen(sector_filter)
+    pipe.set_screen(sector_filter &
+                    (large_cap_filter) &
+                    (high_div_filter | no_div_filter))
 
 def before_trading_start(context, data):
     """
     Filter pipeline output to security list
-    NOTE:  I'm doing this here since it takes a while and this apparently has a longer timeout than my_rebalance()
+    NOTE:  I'm doing this here since it takes a while and this apparently has a longer timeout than rebalance()
     """
     my_pipeline = pipeline_output('my_pipeline')
     
     # Cache unemployment data once per month
-    if get_datetime().day < 6:
+    if get_datetime().day < REBALANCE_DAY:
         context.unemplSet = False
-    if get_datetime().day >= 6 and context.unemplSet == False:
+    if get_datetime().day >= REBALANCE_DAY and context.unemplSet == False:
         context.unempl.append(my_pipeline['unempl'][0])
         context.unemplSet = True
+        
+        # Build long and short stock lists
+        long_stocks = my_pipeline[
+            (my_pipeline.country_id == "USA") & 
+            ((my_pipeline.exchange_id == "NAS") | 
+             (my_pipeline.exchange_id == "NYSE")) &
+            (my_pipeline.div_yld > .04) &
+            (my_pipeline.mkt_cap > 4000000000) &
+            (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:100]
+        context.security_list = long_stocks.sort_values(by='debtToEquity', ascending=True).index[:7]
     
-    # Build long and short stock lists
-    long_stocks = my_pipeline[
-        (my_pipeline.country_id == "USA") & 
-        ((my_pipeline.exchange_id == "NAS") | 
-         (my_pipeline.exchange_id == "NYSE")) &
-        (my_pipeline.div_yld > .04) &
-        (my_pipeline.mkt_cap > 4000000000) &
-        (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:100]
-    context.security_list = long_stocks.sort_values(by='debtToEquity', ascending=True).index[:7]
-    
-    short_stocks = my_pipeline[
-        (my_pipeline.country_id == "USA") & 
-        ((my_pipeline.exchange_id == "NAS") | 
-         (my_pipeline.exchange_id == "NYSE")) &
-        ~(my_pipeline.div_yld > 0.0) &
-        (my_pipeline.mkt_cap < 50000000) &
-        (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:100]
-    context.short_security_list = short_stocks.sort_values(by='debtToEquity', ascending=False).index[:7]
+        short_stocks = my_pipeline[
+            (my_pipeline.country_id == "USA") & 
+            ((my_pipeline.exchange_id == "NAS") | 
+             (my_pipeline.exchange_id == "NYSE")) &
+            ~(my_pipeline.div_yld > 0.0) &
+            (my_pipeline.mkt_cap < 5000000000) &
+            (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:100]
+        context.short_security_list = short_stocks.sort_values(by='debtToEquity', ascending=False).index[:7]
 
 def is_unempl_unfavorable(unempl):
     currUnempl = unempl[-1]
@@ -134,7 +136,7 @@ def is_unempl_unfavorable(unempl):
     unemplUnfavorable = currUnempl > pastUnempl
     return unemplUnfavorable
 
-def my_rebalance(context,data):
+def recalc_unempl(context,data):
     
     # Calculate unemployment indicator
     context.unemplUnfavorable = is_unempl_unfavorable(context.unempl)
@@ -144,7 +146,7 @@ def my_rebalance(context,data):
     mavgShort = data.history(spy, 'price', 50, '1d').mean()
     mavgLong = data.history(spy, 'price', 200, '1d').mean()
     context.momentumUnfavorable = mavgShort <= mavgLong
-
+    
 def execute_orders(context,data):
     
     # Cover everything if indicators unfavorable
@@ -174,19 +176,14 @@ def execute_orders(context,data):
     
     # Rebalance
     long_weight = 1.8 / float(len(context.security_list))  
-    short_weight = -0.7 / float(len(context.security_list)) 
+    short_weight = -0.7 / float(len(context.short_security_list)) 
     for long_stock in context.security_list:
         order_target_percent(long_stock, long_weight)
     
     for short_stock in context.short_security_list:
         order_target_percent(short_stock, short_weight)
-
-def my_rebalance_once(context, data):
-    if not context.algo_started:
-        context.algo_started = True
-        my_rebalance(context,data)
- 
-def my_record_vars(context, data):
+    
+def record_vars(context, data):
     """
     Plot variables at the end of each day.
     """
@@ -237,7 +234,7 @@ def build_unempl_collection():
     
     # Strip future values
     now = get_datetime()
-    monthOffset = ((now.year - 1997) * 12) + now.month - 1
+    monthOffset = ((now.year - 1997) * 12) + now.month
     unempl_list = unempl_list[:monthOffset]
     
     return unempl_list
