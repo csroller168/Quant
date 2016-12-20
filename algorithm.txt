@@ -45,6 +45,9 @@ class CurrUnemplFactor(CustomFactor):
         out[:] = unempl
 
 def initialize(context):
+    context.security_list = []
+    context.short_security_list = []
+    
     """
     Called once at the start of the algorithm.
     """   
@@ -95,7 +98,6 @@ def build_pipeline(pipe):
     # Screen for approximation of S&P 500
     mkt_cap = morningstar.valuation.market_cap.latest
     large_cap_filter = (mkt_cap > 4000000000)
-    #small_cap_filter = (mkt_cap < 2000000000)
     country_id = morningstar.company_reference.country_id.latest
     exchange_id = morningstar.company_reference.primary_exchange_id.latest
     pipe.add(mkt_cap, 'mkt_cap')
@@ -195,8 +197,12 @@ def execute_orders(context,data):
                 order_target(stock, 0)
     
     # Rebalance
-    long_weight = 1.5 / float(len(context.security_list))  
-    short_weight = -0.8 / float(len(context.short_security_list)) 
+    long_weight = 0
+    short_wight = 0
+    if len(context.security_list) > 0:
+        long_weight = 1.5 / float(len(context.security_list))  
+    if len(context.short_security_list) > 0:
+        short_weight = -0.8 / float(len(context.short_security_list)) 
     for long_stock in context.security_list:
         if data.can_trade(long_stock):
             order_target_percent(long_stock, long_weight)
