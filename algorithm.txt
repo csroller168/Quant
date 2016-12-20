@@ -3,7 +3,11 @@ Copyright Chris Short 2016
 Use is unauthorized without written permission
 
     # TODO
-    - Fix short algorithm
+    - don't lose money in years when market does well
+        - reduce spy short when mkt favorable?
+        - vary numShorts and short weight?
+    - add alerts to indicate if leverage > 3 or short pos < 1
+    - for next algorithm, try the optimizer API
      
      Lower priority:
      - adjust SPY short% during total pullout - optimize beta and drawdown
@@ -23,12 +27,15 @@ from quantopian.pipeline import Pipeline, CustomFactor
 from quantopian.pipeline.classifiers.morningstar import Sector
 from quantopian.pipeline.data import morningstar
 from quantopian.pipeline.data.quandl import fred_unrate
+from quantopian.pipeline.data.builtin import USEquityPricing
 import math
 import pandas as pd
 import numpy as np
  
 UTILITIES_SECTOR = 207
 REBALANCE_DAY = 6
+NUM_LONG = 7
+NUM_SHORT = 7
 
 class CurrUnemplFactor(CustomFactor):
     window_length = 1
@@ -69,9 +76,15 @@ def build_pipeline(pipe):
     # Add employment data
     pipe.add(CurrUnemplFactor(), 'unempl')
     
-    # Screen for no utilities
+    # Screen for no utilities and minimum volume
     sector_code = morningstar.asset_classification.morningstar_sector_code.latest
     sector_filter = (sector_code != UTILITIES_SECTOR)
+    
+    volume = USEquityPricing.volume.latest
+    volume_filter = (volume > 10000)
+    
+    # Blacklist stocks
+    symbol_filter = ~morningstar.share_class_reference.symbol.latest.matches('TPC')
     
     # Screen for high current dividend yield
     div_yld = morningstar.valuation_ratios.dividend_yield.latest
@@ -82,19 +95,24 @@ def build_pipeline(pipe):
     # Screen for approximation of S&P 500
     mkt_cap = morningstar.valuation.market_cap.latest
     large_cap_filter = (mkt_cap > 4000000000)
-    #small_cap_filter = (mkt_cap < 50000000)
+    #small_cap_filter = (mkt_cap < 2000000000)
     country_id = morningstar.company_reference.country_id.latest
     exchange_id = morningstar.company_reference.primary_exchange_id.latest
     pipe.add(mkt_cap, 'mkt_cap')
     pipe.add(country_id, 'country_id')
     pipe.add(exchange_id, 'exchange_id')
     
-    # Screen for non-negative debt-equity ratio
+    # Track financial metrics
     debtToEquity = morningstar.operation_ratios.long_term_debt_equity_ratio.latest
     pipe.add(debtToEquity, 'debtToEquity')
     
+    roe = morningstar.operation_ratios.roe.latest
+    pipe.add(roe, 'roe')
+    
     pipe.set_screen(sector_filter &
-                    (large_cap_filter) &
+                    volume_filter &
+                    symbol_filter &
+                    large_cap_filter &
                     (high_div_filter | no_div_filter))
 
 def before_trading_start(context, data):
@@ -119,16 +137,16 @@ def before_trading_start(context, data):
             (my_pipeline.div_yld > .04) &
             (my_pipeline.mkt_cap > 4000000000) &
             (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:100]
-        context.security_list = long_stocks.sort_values(by='debtToEquity', ascending=True).index[:7]
+        context.security_list = long_stocks.sort_values(by='debtToEquity', ascending=True).index[:NUM_LONG]
     
         short_stocks = my_pipeline[
             (my_pipeline.country_id == "USA") & 
             ((my_pipeline.exchange_id == "NAS") | 
              (my_pipeline.exchange_id == "NYSE")) &
             ~(my_pipeline.div_yld > 0.0) &
-            (my_pipeline.mkt_cap < 5000000000) &
-            (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:100]
-        context.short_security_list = short_stocks.sort_values(by='debtToEquity', ascending=False).index[:7]
+            (my_pipeline.mkt_cap > 20000000000) &
+            (data.can_trade(my_pipeline.index))].sort_values(by='roe', ascending=True).iloc[:100]
+        context.short_security_list = short_stocks.sort_values(by='debtToEquity', ascending=False).index[:NUM_SHORT]
 
 def is_unempl_unfavorable(unempl):
     currUnempl = unempl[-1]
@@ -161,9 +179,9 @@ def execute_orders(context,data):
     if context.momentumUnfavorable and context.unemplUnfavorable:
         order_target_percent(symbol('SPY'), -0.8)
     elif context.momentumUnfavorable or context.unemplUnfavorable:
-        order_target_percent(symbol('SPY'), -0.3)
+        order_target_percent(symbol('SPY'), -0.4)
     else:
-        order_target_percent(symbol('SPY'), -0.3)
+        order_target_percent(symbol('SPY'), -0.15)
     
     if sell_everything:
         return
@@ -177,16 +195,26 @@ def execute_orders(context,data):
                 order_target(stock, 0)
     
     # Rebalance
-    long_weight = 1.3 / float(len(context.security_list))  
-    short_weight = -0.7 / float(len(context.short_security_list)) 
+    long_weight = 1.5 / float(len(context.security_list))  
+    short_weight = -0.8 / float(len(context.short_security_list)) 
     for long_stock in context.security_list:
         if data.can_trade(long_stock):
             order_target_percent(long_stock, long_weight)
     
+    numShort = count_shorts(context.portfolio.positions)
     for short_stock in context.short_security_list:
-        if data.can_trade(short_stock):
+        if data.can_trade(short_stock) and numShort < NUM_SHORT:
             order_target_percent(short_stock, short_weight)
-    
+            if short_stock not in context.portfolio.positions.iterkeys():
+                numShort += 1
+
+def count_shorts(positions):
+    numShort = 0
+    for position in positions.itervalues():
+        if position.amount < 0:
+            numShort += 1
+    return numShort
+
 def record_vars(context, data):
     """
     Plot variables at the end of each day.
@@ -240,4 +268,3 @@ def build_unempl_collection():
     unempl_list = unempl_list[:monthOffset]
     
     return unempl_list
-
