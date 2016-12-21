@@ -6,7 +6,7 @@ Use is unauthorized without written permission
     - don't lose money in years when market does well
         - reduce spy short when mkt favorable?
         - vary numShorts and short weight?
-    - add alerts to indicate if leverage > 3 or short pos < 1
+        - Filter shorts by earnings
     - for next algorithm, try the optimizer API
      
      Lower priority:
@@ -198,7 +198,7 @@ def execute_orders(context,data):
     
     # Rebalance
     long_weight = 0
-    short_wight = 0
+    short_weight = 0
     if len(context.security_list) > 0:
         long_weight = 1.5 / float(len(context.security_list))  
     if len(context.short_security_list) > 0:
@@ -240,6 +240,12 @@ def record_vars(context, data):
         if position.amount < 0:
             short_count += 1
             log_str += position.sid.symbol + "(short), "
+    
+    # Raise an alert if short_count or leverage out of contest range
+    if short_count == 0:
+        short_count = 99
+    if leverage > 3:
+        leverage = 99
     
     # Plot the counts
     record(num_long=long_count, num_short=short_count, currUnempl=currUnempl, pastUnempl=pastUnempl, leverage=leverage)
