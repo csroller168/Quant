@@ -4,23 +4,12 @@ Use is unauthorized without written permission
 
     # TODO
     - don't lose money in years when market does well
-        - reduce spy short when mkt favorable?
-        - vary numShorts and short weight?
-        - Filter shorts by earnings
+        - current alg is worse than last saved - partial rollback
+    Low priority:
     - for next algorithm, try the optimizer API
-     
-     Lower priority:
-     - adjust SPY short% during total pullout - optimize beta and drawdown
-     - consider vary SPY short % with real time beta
-     - filter by 4% 5 yr avg. div yld
-         - or try to use dividend yield I'm currently getting, and figure out how to get selected past values with a limited window (maybe hacking with some way to set the current datetime, or some way to call calculate() with amended today value...)
-            def compute(self, today, assets, out, close):
-                today = today - 1 year
-                # repeat above for 4 custom factors for each year back
-                out[:] = something...
+    - consider vary SPY short % with real time beta
      - Consider change momentum indicator to mavg(14) <= mavg(50)
      - Consider reduce leverage if one indicator says to sell but other doesn't
-
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
 from quantopian.pipeline import Pipeline, CustomFactor
@@ -33,6 +22,7 @@ import pandas as pd
 import numpy as np
  
 UTILITIES_SECTOR = 207
+TECH_SECTOR = 311
 REBALANCE_DAY = 6
 NUM_LONG = 7
 NUM_SHORT = 7
@@ -41,9 +31,9 @@ class CurrUnemplFactor(CustomFactor):
     window_length = 1
     inputs = [fred_unrate.value]
     
-    def compute(sef, today, assets, out, unempl):
+    def compute(self, today, assets, out, unempl):
         out[:] = unempl
-
+        
 def initialize(context):
     context.security_list = []
     context.short_security_list = []
@@ -76,18 +66,19 @@ def initialize(context):
     build_pipeline(pipe)
 
 def build_pipeline(pipe):
-    # Add employment data
+    # Add employment data and momentum
     pipe.add(CurrUnemplFactor(), 'unempl')
     
     # Screen for no utilities and minimum volume
     sector_code = morningstar.asset_classification.morningstar_sector_code.latest
-    sector_filter = (sector_code != UTILITIES_SECTOR)
+    sector_filter = (sector_code != UTILITIES_SECTOR) & (sector_code != TECH_SECTOR)
     
     volume = USEquityPricing.volume.latest
     volume_filter = (volume > 10000)
     
     # Blacklist stocks
-    symbol_filter = ~morningstar.share_class_reference.symbol.latest.matches('TPC')
+    symbol_filter = ~(morningstar.share_class_reference.symbol.latest.matches('TPC')) & ~(morningstar.share_class_reference.symbol.latest.matches('NFLX'))
+    
     
     # Screen for high current dividend yield
     div_yld = morningstar.valuation_ratios.dividend_yield.latest
@@ -110,6 +101,10 @@ def build_pipeline(pipe):
     
     roe = morningstar.operation_ratios.roe.latest
     pipe.add(roe, 'roe')
+    pe = morningstar.valuation_ratios.pe_ratio.latest
+    pipe.add(pe, 'pe')
+    close = USEquityPricing.close.latest
+    pipe.add(close, 'close')
     
     pipe.set_screen(sector_filter &
                     volume_filter &
@@ -137,7 +132,6 @@ def before_trading_start(context, data):
             ((my_pipeline.exchange_id == "NAS") | 
              (my_pipeline.exchange_id == "NYSE")) &
             (my_pipeline.div_yld > .04) &
-            (my_pipeline.mkt_cap > 4000000000) &
             (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:100]
         context.security_list = long_stocks.sort_values(by='debtToEquity', ascending=True).index[:NUM_LONG]
     
@@ -146,7 +140,10 @@ def before_trading_start(context, data):
             ((my_pipeline.exchange_id == "NAS") | 
              (my_pipeline.exchange_id == "NYSE")) &
             ~(my_pipeline.div_yld > 0.0) &
-            (my_pipeline.mkt_cap > 20000000000) &
+            (my_pipeline.mkt_cap > 10000000000) &
+            (my_pipeline.close > 30) &
+            (my_pipeline.pe > 30) &
+            (data.history(my_pipeline.index, 'price', 14, '1d').mean() < data.history(my_pipeline.index, 'price', 50, '1d').mean()) &
             (data.can_trade(my_pipeline.index))].sort_values(by='roe', ascending=True).iloc[:100]
         context.short_security_list = short_stocks.sort_values(by='debtToEquity', ascending=False).index[:NUM_SHORT]
 
@@ -183,7 +180,7 @@ def execute_orders(context,data):
     elif context.momentumUnfavorable or context.unemplUnfavorable:
         order_target_percent(symbol('SPY'), -0.4)
     else:
-        order_target_percent(symbol('SPY'), -0.15)
+        order_target_percent(symbol('SPY'), -0.05)
     
     if sell_everything:
         return
@@ -200,7 +197,7 @@ def execute_orders(context,data):
     long_weight = 0
     short_weight = 0
     if len(context.security_list) > 0:
-        long_weight = 1.5 / float(len(context.security_list))  
+        long_weight = 1.3 / float(len(context.security_list))  
     if len(context.short_security_list) > 0:
         short_weight = -0.8 / float(len(context.short_security_list)) 
     for long_stock in context.security_list:
