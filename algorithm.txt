@@ -3,8 +3,8 @@ Copyright Chris Short 2016
 Use is unauthorized without written permission
 
     # TODO
-    - don't lose money in years when market does well
-        - current alg is worse than last saved - partial rollback
+    - vary leverage dynamically?
+    - continue to reduce beta
     Low priority:
     - for next algorithm, try the optimizer API
     - consider vary SPY short % with real time beta
@@ -23,6 +23,10 @@ import numpy as np
  
 UTILITIES_SECTOR = 207
 TECH_SECTOR = 311
+ENERGY_SECTOR = 309
+BASIC_MATERIALS_SECTOR = 101
+REAL_ESTATE_SECTOR = 104
+
 REBALANCE_DAY = 6
 NUM_LONG = 7
 NUM_SHORT = 7
@@ -71,14 +75,13 @@ def build_pipeline(pipe):
     
     # Screen for no utilities and minimum volume
     sector_code = morningstar.asset_classification.morningstar_sector_code.latest
-    sector_filter = (sector_code != UTILITIES_SECTOR) & (sector_code != TECH_SECTOR)
+    sector_filter = (sector_code != UTILITIES_SECTOR)
     
     volume = USEquityPricing.volume.latest
     volume_filter = (volume > 10000)
     
     # Blacklist stocks
     symbol_filter = ~(morningstar.share_class_reference.symbol.latest.matches('TPC')) & ~(morningstar.share_class_reference.symbol.latest.matches('NFLX'))
-    
     
     # Screen for high current dividend yield
     div_yld = morningstar.valuation_ratios.dividend_yield.latest
@@ -105,6 +108,8 @@ def build_pipeline(pipe):
     pipe.add(pe, 'pe')
     close = USEquityPricing.close.latest
     pipe.add(close, 'close')
+    peg = morningstar.valuation_ratios.peg_ratio.latest
+    pipe.add(peg, 'peg')
     
     pipe.set_screen(sector_filter &
                     volume_filter &
@@ -143,9 +148,11 @@ def before_trading_start(context, data):
             (my_pipeline.mkt_cap > 10000000000) &
             (my_pipeline.close > 30) &
             (my_pipeline.pe > 30) &
+            (my_pipeline.debtToEquity > 0.25) &
+            (my_pipeline.roe < 0.07) &
             (data.history(my_pipeline.index, 'price', 14, '1d').mean() < data.history(my_pipeline.index, 'price', 50, '1d').mean()) &
             (data.can_trade(my_pipeline.index))].sort_values(by='roe', ascending=True).iloc[:100]
-        context.short_security_list = short_stocks.sort_values(by='debtToEquity', ascending=False).index[:NUM_SHORT]
+        context.short_security_list = short_stocks.sort_values(by='peg', ascending=False).index[:NUM_SHORT]
 
 def is_unempl_unfavorable(unempl):
     currUnempl = unempl[-1]
@@ -176,9 +183,9 @@ def execute_orders(context,data):
     
     # Short SPY according to indicators
     if context.momentumUnfavorable and context.unemplUnfavorable:
-        order_target_percent(symbol('SPY'), -0.8)
+        order_target_percent(symbol('SPY'), -1.5)
     elif context.momentumUnfavorable or context.unemplUnfavorable:
-        order_target_percent(symbol('SPY'), -0.4)
+        order_target_percent(symbol('SPY'), -0.2)
     else:
         order_target_percent(symbol('SPY'), -0.05)
     
@@ -194,12 +201,9 @@ def execute_orders(context,data):
                 order_target(stock, 0)
     
     # Rebalance
-    long_weight = 0
-    short_weight = 0
-    if len(context.security_list) > 0:
-        long_weight = 1.3 / float(len(context.security_list))  
-    if len(context.short_security_list) > 0:
-        short_weight = -0.8 / float(len(context.short_security_list)) 
+    long_weight = 1.2 / np.mean([float(NUM_LONG),float(len(context.security_list))])
+    short_weight = -1.2 / np.mean([float(NUM_SHORT),float(len(context.short_security_list))])
+    
     for long_stock in context.security_list:
         if data.can_trade(long_stock):
             order_target_percent(long_stock, long_weight)
