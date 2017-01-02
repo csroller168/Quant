@@ -3,6 +3,9 @@ Copyright Chris Short 2016
 Use is unauthorized without written permission
 
     # TODO
+    - screen longs for margin
+        - ebit_margin > .03
+    - make money in later years
     - vary leverage dynamically?
     - continue to reduce beta
     Low priority:
@@ -22,9 +25,6 @@ import pandas as pd
 import numpy as np
  
 UTILITIES_SECTOR = 207
-TECH_SECTOR = 311
-ENERGY_SECTOR = 309
-BASIC_MATERIALS_SECTOR = 101
 REAL_ESTATE_SECTOR = 104
 
 REBALANCE_DAY = 6
@@ -110,6 +110,8 @@ def build_pipeline(pipe):
     pipe.add(close, 'close')
     peg = morningstar.valuation_ratios.peg_ratio.latest
     pipe.add(peg, 'peg')
+    ebit_mgn = morningstar.operation_ratios.ebitda_margin.latest
+    pipe.add(ebit_mgn, 'ebit_mgn')
     
     pipe.set_screen(sector_filter &
                     volume_filter &
@@ -136,7 +138,8 @@ def before_trading_start(context, data):
             (my_pipeline.country_id == "USA") & 
             ((my_pipeline.exchange_id == "NAS") | 
              (my_pipeline.exchange_id == "NYSE")) &
-            (my_pipeline.div_yld > .04) &
+            (my_pipeline.div_yld > 0.04) &
+            (my_pipeline.ebit_mgn > 0.03) &
             (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:100]
         context.security_list = long_stocks.sort_values(by='debtToEquity', ascending=True).index[:NUM_LONG]
     
@@ -201,8 +204,8 @@ def execute_orders(context,data):
                 order_target(stock, 0)
     
     # Rebalance
-    long_weight = 1.2 / np.mean([float(NUM_LONG),float(len(context.security_list))])
-    short_weight = -1.2 / np.mean([float(NUM_SHORT),float(len(context.short_security_list))])
+    long_weight = 1.3 / np.mean([float(NUM_LONG),float(len(context.security_list))])
+    short_weight = -1.1 / np.mean([float(NUM_SHORT),float(len(context.short_security_list))])
     
     for long_stock in context.security_list:
         if data.can_trade(long_stock):
