@@ -138,6 +138,7 @@ def rebalance(context, data, my_pipeline):
         (my_pipeline.exchange_id == "NYSE")) &
         ~(my_pipeline.div_yld > 0.0) &
         (my_pipeline.mkt_cap < 15000000000) &
+        (my_pipeline.mkt_cap > 100000000) &
         (my_pipeline.close > 10) &
         #(my_pipeline.pe > 15) &
         (my_pipeline.debtToEquity > 0.5) &
@@ -191,14 +192,14 @@ def execute_orders(context,data):
     long_base = 1.4
     short_base = -1.3
     if context.momentumUnfavorable and context.unemplUnfavorable:
-        order_target_percent(symbol('SPY'), -1.5)
+        order_target_percent(symbol('SPY'), -1.0)
         sell_everything = True
     elif context.momentumUnfavorable or context.unemplUnfavorable:
-        order_target_percent(symbol('SPY'), -0.1)
+        order_target_percent(symbol('SPY'), -0.2)
     else:
-        order_target_percent(symbol('SPY'), -0.05)
-        long_base = 1.5
-        short_base = -1.0
+        order_target_percent(symbol('SPY'), -0.2)
+        long_base = 1.3
+        short_base = -1.3
     
     # Sell everything if needed
     if sell_everything:
