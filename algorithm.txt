@@ -3,6 +3,7 @@ Copyright Chris Short 2016
 Use is unauthorized without written permission
 
     # TODO
+    - further adjust mkt cap to reduce beta
     - vary long/short weight bases according to indicators
     - allow shorts during market drawdown
         - consider buy spy and short my list
@@ -189,17 +190,17 @@ def execute_orders(context,data):
     sell_everything = False
     
     # Short SPY according to indicators
-    long_base = 1.4
-    short_base = -1.3
+    long_base = 1.1
+    short_base = -1.0
     if context.momentumUnfavorable and context.unemplUnfavorable:
         order_target_percent(symbol('SPY'), -1.0)
         sell_everything = True
     elif context.momentumUnfavorable or context.unemplUnfavorable:
-        order_target_percent(symbol('SPY'), -0.2)
+        order_target_percent(symbol('SPY'), -0.25)
     else:
         order_target_percent(symbol('SPY'), -0.2)
-        long_base = 1.3
-        short_base = -1.3
+        long_base = 1.1
+        short_base = -1.1
     
     # Sell everything if needed
     if sell_everything:
