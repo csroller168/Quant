@@ -1,9 +1,10 @@
 """
-Copyright Chris Short 2016
+Copyright Chris Short 2017
 Use is unauthorized without written permission
 
     # TODO
-    - further adjust mkt cap to reduce beta
+    - reduce beta via https://www.quantopian.com/posts/beta-zero-targeting-automatic-never-worry-about-beta-again
+    - experiment with screening short_stocks with multiple calls to sort on a metric, then taking most favorable 80% (0.8 * len(short_stocks)
     - vary long/short weight bases according to indicators
     - allow shorts during market drawdown
         - consider buy spy and short my list
@@ -40,6 +41,8 @@ class CurrUnemplFactor(CustomFactor):
 def initialize(context):
     context.security_list = []
     context.short_security_list = []
+    context.portfolioCloses = np.array([])
+    context.benchmarkCloses = np.array([])
     
     """
     Called once at the start of the algorithm.
@@ -148,7 +151,7 @@ def rebalance(context, data, my_pipeline):
         #####(my_pipeline.revenue_growth < 0.02) &
         (my_pipeline.roe < 0) &
         #(data.history(my_pipeline.index, 'price', 7, '1d').mean() < data.history(my_pipeline.index, 'price', 21, '1d').mean()) &
-        (data.can_trade(my_pipeline.index))].sort_values(by='pe', ascending=True).iloc[:int(NUM_SHORT*5)]
+        (data.can_trade(my_pipeline.index))].sort_values(by='pe', ascending=False).iloc[:int(NUM_SHORT*5)]
     context.short_security_list = short_stocks.sort_values(by='revenue_growth', ascending=True).index[:NUM_SHORT]
 
 def before_trading_start(context, data):
@@ -240,15 +243,18 @@ def count_shorts(positions):
     return numShort
 
 def record_vars(context, data):
-    """
-    Plot variables at the end of each day.
-    """
+    # Record beta variables
+    context.portfolioCloses = np.append(context.portfolioCloses, context.portfolio.portfolio_value)
+    context.benchmarkCloses = np.append(context.benchmarkCloses, data.history(sid(8554), 'price', 1, '1d')[0])
+    
+    # Plot variables at the end of each day.
     long_count = 0
     short_count = 0
     leverage = context.account.leverage
     unempl = context.unempl
     currUnempl = unempl[-1]
     pastUnempl = (unempl[-4] + unempl[-3] + unempl[-2]) / 3
+    beta = estimateBeta(context.portfolioCloses, context.benchmarkCloses)
     
     log_str = "holding: "
     for position in context.portfolio.positions.itervalues():
@@ -266,8 +272,9 @@ def record_vars(context, data):
         leverage = 99
     
     # Plot the counts
-    record(num_long=long_count, num_short=short_count, currUnempl=currUnempl, pastUnempl=pastUnempl, leverage=leverage)
-    log.info(log_str)
+    #record(num_long=long_count, num_short=short_count, currUnempl=currUnempl, pastUnempl=pastUnempl, leverage=leverage)
+    record(currUnempl=currUnempl, pastUnempl=pastUnempl, leverage=leverage, beta=beta)
+    #log.info(log_str)
 
 def build_unempl_collection():
     unempl_list = [
@@ -298,3 +305,21 @@ def build_unempl_collection():
     unempl_list = unempl_list[:monthOffset]
     
     return unempl_list
+
+def estimateBeta(priceY,priceX):  
+    algorithm_returns = (priceY / np.roll(priceY,1))[1:31]
+    benchmark_returns = (priceX / np.roll(priceX,1))[1:31]  
+    if len(algorithm_returns) <> len(benchmark_returns):  
+        minlen = min(len(algorithm_returns), len(benchmark_returns))  
+        if minlen > 2:  
+            algorithm_returns = algorithm_returns[-minlen:]  
+            benchmark_returns = benchmark_returns[-minlen:]  
+        else:  
+            return 1.00  
+    returns_matrix = np.vstack([algorithm_returns, benchmark_returns])  
+    C = np.cov(returns_matrix, ddof=1)  
+    algorithm_covariance = C[0][1]  
+    benchmark_variance = C[1][1]  
+    beta = algorithm_covariance / benchmark_variance
+
+    return beta
