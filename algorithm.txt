@@ -3,9 +3,7 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
     # TODO
-    - reduce beta via https://www.quantopian.com/posts/beta-zero-targeting-automatic-never-worry-about-beta-again
     - experiment with screening short_stocks with multiple calls to sort on a metric, then taking most favorable 80% (0.8 * len(short_stocks)
-    - vary long/short weight bases according to indicators
     - allow shorts during market drawdown
         - consider buy spy and short my list
     - normalize leverage dynamically
@@ -43,6 +41,14 @@ def initialize(context):
     context.short_security_list = []
     context.portfolioCloses = np.array([])
     context.benchmarkCloses = np.array([])
+    context.spy = sid(8554)  
+    context.tlt = sid(23921)  
+    context.beta = 1.0  # Assumed starting beta  
+    context.beta_target = 0.0  # Target any Beta you wish  
+    context.beta_limit = .05 # Pos/neg threshold, balance only outside of this either side of target  
+    context.spy_limit_hi = .95 # Max ratio of spy to portfolio  
+    context.spy_limit_lo = 1.0 - context.spy_limit_hi  
+    context.beta_df = pd.DataFrame([], columns=['pf', 'spy']) 
     
     """
     Called once at the start of the algorithm.
@@ -161,6 +167,13 @@ def before_trading_start(context, data):
     """
     my_pipeline = pipeline_output('my_pipeline')
     
+    context.beta_df = context.beta_df.append({    # Beta calc prep  
+        'pf' : context.portfolio.portfolio_value,  
+        'spy': data.current(context.spy, 'price')}, ignore_index=True)  
+    context.beta_df['spy_chg'] = context.beta_df.spy.pct_change()  
+    context.beta_df[ 'pf_chg'] = context.beta_df.pf.pct_change()  
+    context.beta_df = context.beta_df.ix[-31:]    # trim to one month
+    
     # Cache unemployment data once per month
     if get_datetime().day < REBALANCE_DAY:
         context.unemplSet = False
@@ -193,22 +206,43 @@ def execute_orders(context,data):
     sell_everything = False
     
     # Short SPY according to indicators
-    long_base = 1.1
-    short_base = -1.0
+    long_base = 1.0
+    short_base = -0.5
     if context.momentumUnfavorable and context.unemplUnfavorable:
-        order_target_percent(symbol('SPY'), -1.0)
-        sell_everything = True
-    elif context.momentumUnfavorable or context.unemplUnfavorable:
-        order_target_percent(symbol('SPY'), -0.25)
-    else:
-        order_target_percent(symbol('SPY'), -0.2)
-        long_base = 1.1
-        short_base = -1.1
+        # order_target_percent(symbol('SPY'), -1.0)
+        long_base = 0.0
+        short_base = -0.8
+        #sell_everything = True
+    #elif context.momentumUnfavorable or context.unemplUnfavorable:
+    #    order_target_percent(symbol('SPY'), -0.25)
+    #else:
+    #    order_target_percent(symbol('SPY'), -0.2)
+    #    long_base = 1.1
+    #    short_base = -1.1
+    
+    # Balance beta with SPY/TLT positions
+    context.beta = estimateBeta(context.portfolioCloses, context.benchmarkCloses)
+    bzat = context.beta - context.beta_target
+    if bzat < -context.beta_limit or bzat > context.beta_limit:
+        pos_val = context.portfolio.positions_value  
+        spy_val = context.portfolio.positions[context.spy].amount * data.current(context.spy, 'price')  
+        spy_ratio = spy_val / pos_val
+        
+        # Reduce spy & increase tlt or visa-versa  
+        # The further away from target Beta, the stronger the adjustment.  
+        # https://www.quantopian.com/posts/scaling for explanation of next line ...  
+        temperance = scale(abs(bzat), 0, .30, .35, .80) # Not straight Beta, a portion of it.  
+        adjust = max(context.spy_limit_lo, spy_ratio - (bzat * temperance))  
+        adjust = min(context.spy_limit_hi, adjust)  # spy ratio no higher than spy_limit_hi  
+        order_target_percent(context.spy, adjust)  
+        order_target_percent(context.tlt, 1.0 - adjust) # Remainder for tlt
     
     # Sell everything if needed
     if sell_everything:
         for stock in context.portfolio.positions.iterkeys():
-            if data.can_trade(stock):
+            if data.can_trade(stock) and \
+                stock.symbol != 'SPY' and \
+                stock.symbol != 'TLT':
                 order_target(stock, 0)
         return
     
@@ -216,7 +250,8 @@ def execute_orders(context,data):
     for stock in context.portfolio.positions.iterkeys():  
         if stock not in context.security_list and \
             stock not in context.short_security_list and \
-            stock.symbol != 'SPY' and \
+            stock.symbol != 'SPY'  and \
+            stock.symbol != 'TLT' and \
             data.can_trade(stock):
                 order_target(stock, 0)
     
@@ -254,7 +289,7 @@ def record_vars(context, data):
     unempl = context.unempl
     currUnempl = unempl[-1]
     pastUnempl = (unempl[-4] + unempl[-3] + unempl[-2]) / 3
-    beta = estimateBeta(context.portfolioCloses, context.benchmarkCloses)
+    beta = context.beta
     
     log_str = "holding: "
     for position in context.portfolio.positions.itervalues():
@@ -273,7 +308,7 @@ def record_vars(context, data):
     
     # Plot the counts
     #record(num_long=long_count, num_short=short_count, currUnempl=currUnempl, pastUnempl=pastUnempl, leverage=leverage)
-    record(currUnempl=currUnempl, pastUnempl=pastUnempl, leverage=leverage, beta=beta)
+    record(short_count=short_count, leverage=leverage, beta=beta)
     #log.info(log_str)
 
 def build_unempl_collection():
@@ -323,3 +358,9 @@ def estimateBeta(priceY,priceX):
     beta = algorithm_covariance / benchmark_variance
 
     return beta
+
+def scale(wild, a_lo, a_hi, b_lo, b_hi):  
+    ''' Based on wild value relative to a_lo_hi range,  
+          return its analog within b_hi_lo, with min b_lo and max b_hi  
+    '''  
+    return min(b_hi, max(b_lo, (b_hi * (wild - a_lo)) / (a_hi - a_lo)))
