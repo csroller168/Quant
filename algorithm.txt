@@ -3,6 +3,7 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
     # TODO
+    - analyze whether beta adjuster stops running after while
     - experiment with screening short_stocks with multiple calls to sort on a metric, then taking most favorable 80% (0.8 * len(short_stocks)
     - allow shorts during market drawdown
         - consider buy spy and short my list
