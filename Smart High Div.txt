@@ -1,0 +1,129 @@
+"""
+Copyright Chris Short 2017
+Use is unauthorized without written permission
+
+Ranking algorithm:
+    - base on current alg
+    - screen for low P/E, high book val/share
+    - consider brand favorability factor
+    - use smart screen point-based ranks
+    - rank longs and shorts separately
+
+Calculate long and short buckets:
+    - use top X% of long/short ranks
+    - optimize weights to minimize covariance
+        - https://www.quantopian.com/posts/quantopian-lecture-series-the-good-the-bad-and-the-correlated
+
+- rebalance monthly
+- Use same in/out indicators - unempl + SPY momentum
+- when in the market, buy n% long, m% short
+- when out of market, short 50% short bucket, 50% SPY
+
+"""
+from quantopian.algorithm import attach_pipeline, pipeline_output
+from quantopian.pipeline import Pipeline
+from quantopian.pipeline.data.builtin import USEquityPricing
+from quantopian.pipeline.factors import AverageDollarVolume
+from quantopian.pipeline.filters.morningstar import Q500US
+ 
+def initialize(context):
+    """
+    Called once at the start of the algorithm.
+    """   
+    # Rebalance every day, 1 hour after market open.
+    schedule_function(my_rebalance, date_rules.every_day(), time_rules.market_open(hours=1))
+     
+    # Record tracking variables at the end of each day.
+    schedule_function(record_vars, date_rules.every_day(), time_rules.market_close())
+     
+    # Create our dynamic stock selector.
+    attach_pipeline(make_pipeline(), 'my_pipeline')
+         
+def make_pipeline():
+    """
+    A function to create our dynamic stock selector (pipeline). Documentation on
+    pipeline can be found here: https://www.quantopian.com/help#pipeline-title
+    """
+    
+    # Base universe set to the Q500US
+    base_universe = Q500US()
+
+    # Factor of yesterday's close price.
+    yesterday_close = USEquityPricing.close.latest
+     
+    pipe = Pipeline(
+        screen = base_universe,
+        columns = {
+            'close': yesterday_close,
+        }
+    )
+    return pipe
+ 
+def before_trading_start(context, data):
+    """
+    Called every day before market open.
+    """
+    context.output = pipeline_output('my_pipeline')
+  
+    # These are the securities that we are interested in trading each day.
+    context.security_list = context.output.index
+     
+def my_assign_weights(context, data):
+    """
+    Assign weights to securities that we want to order.
+    """
+    pass
+ 
+def my_rebalance(context,data):
+    """
+    Execute orders according to our schedule_function() timing. 
+    """
+    pass
+ 
+def record_vars(context, data):
+    """
+    Plot variables at the end of each day.
+    """
+    pass
+
+def rebalance():
+    pass
+
+def get_long_bucket():
+    pass
+
+def get_short_bucket():
+    pass
+
+def is_market_favorable():
+    pass
+
+def build_unempl_collection():
+    unempl_list = [
+        5.3, 5.2, 5.2, 5.1, 4.9, 5, 4.9, 4.8, 4.9, 4.7, 4.6, 4.7,
+        4.6, 4.6, 4.7, 4.3, 4.4, 4.5, 4.5, 4.5, 4.6, 4.5, 4.4, 4.4,
+        4.3, 4.4, 4.2, 4.3, 4.2, 4.3, 4.3, 4.2, 4.2, 4.1, 4.1, 4,
+        4, 4.1, 4, 3.8, 4, 4, 4, 4.1, 3.9, 3.9, 3.9, 3.9, 4.2, 4.2,
+        4.3, 4.4, 4.3, 4.5, 4.6, 4.9, 5, 5.3, 5.5, 5.7, 5.7, 5.7,
+        5.7, 5.9, 5.8, 5.8, 5.8, 5.7, 5.7, 5.7, 5.9, 6, 5.8, 5.9,
+        5.9, 6, 6.1, 6.3, 6.2, 6.1, 6.1, 6, 5.8, 5.7, 5.7, 5.6, 5.8,
+        5.6, 5.6, 5.6, 5.5, 5.4, 5.4, 5.5, 5.4, 5.4, 5.3, 5.4, 5.2,
+        5.2, 5.1, 5, 5, 4.9, 5, 5, 5, 4.9, 4.7, 4.8, 4.7, 4.7, 4.6,
+        4.6, 4.7, 4.7, 4.5, 4.4, 4.5, 4.4, 4.6, 4.5, 4.4, 4.5, 4.4,
+        4.6, 4.7, 4.6, 4.7, 4.7, 4.7, 5, 5, 4.9, 5.1, 5, 5.4, 5.6,
+        5.8, 6.1, 6.1, 6.5, 6.8, 7.3, 7.8, 8.3, 8.7, 9, 9.4, 9.5,
+        9.5, 9.6, 9.8, 10, 9.9, 9.9, 9.8, 9.8, 9.9, 9.9, 9.6, 9.4,
+        9.4, 9.5, 9.5, 9.4, 9.8, 9.3, 9.1, 9, 9, 9.1, 9, 9.1, 9, 9,
+        9, 8.8, 8.6, 8.5, 8.3, 8.3, 8.2, 8.2, 8.2, 8.2, 8.2, 8.1,
+        7.8, 7.8, 7.7, 7.9, 8, 7.7, 7.5, 7.6, 7.5, 7.5, 7.3, 7.3,
+        7.2, 7.2, 6.9, 6.7, 6.6, 6.7, 6.7, 6.2, 6.3, 6.1, 6.2, 6.2,
+        5.9, 5.7, 5.8, 5.6, 5.7, 5.5, 5.4, 5.4, 5.5, 5.3, 5.2, 5.1,
+        5, 5, 5, 5, 4.9, 4.9, 5.0, 5.0, 4.7, 4.9, 4.9, 4.9, 4.9, 
+        4.8, 4.6, 4.7, 4.8]
+    
+    # Strip future values
+    now = get_datetime()
+    monthOffset = ((now.year - 1997) * 12) + now.month
+    unempl_list = unempl_list[:monthOffset]
+    
+    return unempl_list
