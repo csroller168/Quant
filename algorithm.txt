@@ -1,13 +1,13 @@
 """
-Copyright Chris Short 2016
+Copyright Chris Short 2017
 Use is unauthorized without written permission
 
     # TODO
-    - screen longs for margin
-        - ebit_margin > .03
-    - make money in later years
-    - vary leverage dynamically?
-    - continue to reduce beta
+    - analyze whether beta adjuster stops running after while
+    - experiment with screening short_stocks with multiple calls to sort on a metric, then taking most favorable 80% (0.8 * len(short_stocks)
+    - allow shorts during market drawdown
+        - consider buy spy and short my list
+    - normalize leverage dynamically
     Low priority:
     - for next algorithm, try the optimizer API
     - consider vary SPY short % with real time beta
@@ -25,7 +25,6 @@ import pandas as pd
 import numpy as np
  
 UTILITIES_SECTOR = 207
-REAL_ESTATE_SECTOR = 104
 
 REBALANCE_DAY = 6
 NUM_LONG = 7
@@ -41,6 +40,16 @@ class CurrUnemplFactor(CustomFactor):
 def initialize(context):
     context.security_list = []
     context.short_security_list = []
+    context.portfolioCloses = np.array([])
+    context.benchmarkCloses = np.array([])
+    context.spy = sid(8554)  
+    context.tlt = sid(23921)  
+    context.beta = 1.0  # Assumed starting beta  
+    context.beta_target = 0.0  # Target any Beta you wish  
+    context.beta_limit = .05 # Pos/neg threshold, balance only outside of this either side of target  
+    context.spy_limit_hi = .95 # Max ratio of spy to portfolio  
+    context.spy_limit_lo = 1.0 - context.spy_limit_hi  
+    context.beta_df = pd.DataFrame([], columns=['pf', 'spy']) 
     
     """
     Called once at the start of the algorithm.
@@ -63,6 +72,7 @@ def initialize(context):
     context.unemplSet = False
     context.momentumUnfavorable = False
     context.unemplUnfavorable = False
+    context.firstDay = True
     
     # Set up long pipeline
     pipe = Pipeline()  
@@ -108,16 +118,48 @@ def build_pipeline(pipe):
     pipe.add(pe, 'pe')
     close = USEquityPricing.close.latest
     pipe.add(close, 'close')
-    peg = morningstar.valuation_ratios.peg_ratio.latest
-    pipe.add(peg, 'peg')
     ebit_mgn = morningstar.operation_ratios.ebitda_margin.latest
     pipe.add(ebit_mgn, 'ebit_mgn')
+    revenue_growth = morningstar.operation_ratios.revenue_growth.latest
+    pipe.add(revenue_growth, 'revenue_growth')
+    growth_score = morningstar.asset_classification.growth_score.latest
+    pipe.add(growth_score, 'growth_score')
+    
     
     pipe.set_screen(sector_filter &
                     volume_filter &
                     symbol_filter &
-                    large_cap_filter &
+                    #large_cap_filter &
                     (high_div_filter | no_div_filter))
+
+def rebalance(context, data, my_pipeline):
+    # Build long and short stock lists
+    long_stocks = my_pipeline[
+        (my_pipeline.country_id == "USA") & 
+        ((my_pipeline.exchange_id == "NAS") | (my_pipeline.exchange_id == "NYSE")) &
+        (my_pipeline.div_yld > 0.04) &
+        (my_pipeline.ebit_mgn > 0.03) &
+        (my_pipeline.mkt_cap > 4000000000) &
+        (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:100]
+    context.security_list = long_stocks.sort_values(by='debtToEquity', ascending=True).index[:NUM_LONG]
+    
+    short_stocks = my_pipeline[
+        (my_pipeline.country_id == "USA") & 
+        ((my_pipeline.exchange_id == "NAS") | 
+        (my_pipeline.exchange_id == "NYSE")) &
+        ~(my_pipeline.div_yld > 0.0) &
+        (my_pipeline.mkt_cap < 15000000000) &
+        (my_pipeline.mkt_cap > 100000000) &
+        (my_pipeline.close > 10) &
+        #(my_pipeline.pe > 15) &
+        (my_pipeline.debtToEquity > 0.5) &
+        #(my_pipeline.ebit_mgn < 0.45) &
+        #(my_pipeline.growth_score < 90) &
+        #####(my_pipeline.revenue_growth < 0.02) &
+        (my_pipeline.roe < 0) &
+        #(data.history(my_pipeline.index, 'price', 7, '1d').mean() < data.history(my_pipeline.index, 'price', 21, '1d').mean()) &
+        (data.can_trade(my_pipeline.index))].sort_values(by='pe', ascending=False).iloc[:int(NUM_SHORT*5)]
+    context.short_security_list = short_stocks.sort_values(by='revenue_growth', ascending=True).index[:NUM_SHORT]
 
 def before_trading_start(context, data):
     """
@@ -126,36 +168,23 @@ def before_trading_start(context, data):
     """
     my_pipeline = pipeline_output('my_pipeline')
     
+    context.beta_df = context.beta_df.append({    # Beta calc prep  
+        'pf' : context.portfolio.portfolio_value,  
+        'spy': data.current(context.spy, 'price')}, ignore_index=True)  
+    context.beta_df['spy_chg'] = context.beta_df.spy.pct_change()  
+    context.beta_df[ 'pf_chg'] = context.beta_df.pf.pct_change()  
+    context.beta_df = context.beta_df.ix[-31:]    # trim to one month
+    
     # Cache unemployment data once per month
     if get_datetime().day < REBALANCE_DAY:
         context.unemplSet = False
     if get_datetime().day >= REBALANCE_DAY and context.unemplSet == False:
         context.unempl.append(my_pipeline['unempl'][0])
         context.unemplSet = True
-        
-        # Build long and short stock lists
-        long_stocks = my_pipeline[
-            (my_pipeline.country_id == "USA") & 
-            ((my_pipeline.exchange_id == "NAS") | 
-             (my_pipeline.exchange_id == "NYSE")) &
-            (my_pipeline.div_yld > 0.04) &
-            (my_pipeline.ebit_mgn > 0.03) &
-            (data.can_trade(my_pipeline.index))].sort_values(by='mkt_cap', ascending=False).iloc[:100]
-        context.security_list = long_stocks.sort_values(by='debtToEquity', ascending=True).index[:NUM_LONG]
-    
-        short_stocks = my_pipeline[
-            (my_pipeline.country_id == "USA") & 
-            ((my_pipeline.exchange_id == "NAS") | 
-             (my_pipeline.exchange_id == "NYSE")) &
-            ~(my_pipeline.div_yld > 0.0) &
-            (my_pipeline.mkt_cap > 10000000000) &
-            (my_pipeline.close > 30) &
-            (my_pipeline.pe > 30) &
-            (my_pipeline.debtToEquity > 0.25) &
-            (my_pipeline.roe < 0.07) &
-            (data.history(my_pipeline.index, 'price', 14, '1d').mean() < data.history(my_pipeline.index, 'price', 50, '1d').mean()) &
-            (data.can_trade(my_pipeline.index))].sort_values(by='roe', ascending=True).iloc[:100]
-        context.short_security_list = short_stocks.sort_values(by='peg', ascending=False).index[:NUM_SHORT]
+        rebalance(context, data, my_pipeline)
+    elif context.firstDay:
+        rebalance(context, data, my_pipeline)
+        context.firstDay = False
 
 def is_unempl_unfavorable(unempl):
     currUnempl = unempl[-1]
@@ -175,37 +204,61 @@ def recalc_unempl(context,data):
     context.momentumUnfavorable = mavgShort <= mavgLong
     
 def execute_orders(context,data):
-    
-    # Cover everything if indicators unfavorable
     sell_everything = False
-    if context.momentumUnfavorable and context.unemplUnfavorable:
-        for stock in context.portfolio.positions.iterkeys():
-            if data.can_trade(stock):
-                order_target(stock, 0)
-        sell_everything = True
     
     # Short SPY according to indicators
+    long_base = 1.0
+    short_base = -0.5
     if context.momentumUnfavorable and context.unemplUnfavorable:
-        order_target_percent(symbol('SPY'), -1.5)
-    elif context.momentumUnfavorable or context.unemplUnfavorable:
-        order_target_percent(symbol('SPY'), -0.2)
-    else:
-        order_target_percent(symbol('SPY'), -0.05)
+        # order_target_percent(symbol('SPY'), -1.0)
+        long_base = 0.0
+        short_base = -0.8
+        #sell_everything = True
+    #elif context.momentumUnfavorable or context.unemplUnfavorable:
+    #    order_target_percent(symbol('SPY'), -0.25)
+    #else:
+    #    order_target_percent(symbol('SPY'), -0.2)
+    #    long_base = 1.1
+    #    short_base = -1.1
     
+    # Balance beta with SPY/TLT positions
+    context.beta = estimateBeta(context.portfolioCloses, context.benchmarkCloses)
+    bzat = context.beta - context.beta_target
+    if bzat < -context.beta_limit or bzat > context.beta_limit:
+        pos_val = context.portfolio.positions_value  
+        spy_val = context.portfolio.positions[context.spy].amount * data.current(context.spy, 'price')  
+        spy_ratio = spy_val / pos_val
+        
+        # Reduce spy & increase tlt or visa-versa  
+        # The further away from target Beta, the stronger the adjustment.  
+        # https://www.quantopian.com/posts/scaling for explanation of next line ...  
+        temperance = scale(abs(bzat), 0, .30, .35, .80) # Not straight Beta, a portion of it.  
+        adjust = max(context.spy_limit_lo, spy_ratio - (bzat * temperance))  
+        adjust = min(context.spy_limit_hi, adjust)  # spy ratio no higher than spy_limit_hi  
+        order_target_percent(context.spy, adjust)  
+        order_target_percent(context.tlt, 1.0 - adjust) # Remainder for tlt
+    
+    # Sell everything if needed
     if sell_everything:
+        for stock in context.portfolio.positions.iterkeys():
+            if data.can_trade(stock) and \
+                stock.symbol != 'SPY' and \
+                stock.symbol != 'TLT':
+                order_target(stock, 0)
         return
     
     # Cover stocks no longer in list
     for stock in context.portfolio.positions.iterkeys():  
         if stock not in context.security_list and \
             stock not in context.short_security_list and \
-            stock.symbol != 'SPY' and \
+            stock.symbol != 'SPY'  and \
+            stock.symbol != 'TLT' and \
             data.can_trade(stock):
                 order_target(stock, 0)
     
-    # Rebalance
-    long_weight = 1.3 / np.mean([float(NUM_LONG),float(len(context.security_list))])
-    short_weight = -1.1 / np.mean([float(NUM_SHORT),float(len(context.short_security_list))])
+    # Execute long/short trades
+    long_weight = long_base / np.mean([float(NUM_LONG),float(len(context.security_list))])
+    short_weight = short_base / np.mean([float(NUM_SHORT),float(len(context.short_security_list))])
     
     for long_stock in context.security_list:
         if data.can_trade(long_stock):
@@ -226,15 +279,18 @@ def count_shorts(positions):
     return numShort
 
 def record_vars(context, data):
-    """
-    Plot variables at the end of each day.
-    """
+    # Record beta variables
+    context.portfolioCloses = np.append(context.portfolioCloses, context.portfolio.portfolio_value)
+    context.benchmarkCloses = np.append(context.benchmarkCloses, data.history(sid(8554), 'price', 1, '1d')[0])
+    
+    # Plot variables at the end of each day.
     long_count = 0
     short_count = 0
     leverage = context.account.leverage
     unempl = context.unempl
     currUnempl = unempl[-1]
     pastUnempl = (unempl[-4] + unempl[-3] + unempl[-2]) / 3
+    beta = context.beta
     
     log_str = "holding: "
     for position in context.portfolio.positions.itervalues():
@@ -252,8 +308,9 @@ def record_vars(context, data):
         leverage = 99
     
     # Plot the counts
-    record(num_long=long_count, num_short=short_count, currUnempl=currUnempl, pastUnempl=pastUnempl, leverage=leverage)
-    log.info(log_str)
+    #record(num_long=long_count, num_short=short_count, currUnempl=currUnempl, pastUnempl=pastUnempl, leverage=leverage)
+    record(short_count=short_count, leverage=leverage, beta=beta)
+    #log.info(log_str)
 
 def build_unempl_collection():
     unempl_list = [
@@ -284,3 +341,27 @@ def build_unempl_collection():
     unempl_list = unempl_list[:monthOffset]
     
     return unempl_list
+
+def estimateBeta(priceY,priceX):  
+    algorithm_returns = (priceY / np.roll(priceY,1))[1:31]
+    benchmark_returns = (priceX / np.roll(priceX,1))[1:31]  
+    if len(algorithm_returns) <> len(benchmark_returns):  
+        minlen = min(len(algorithm_returns), len(benchmark_returns))  
+        if minlen > 2:  
+            algorithm_returns = algorithm_returns[-minlen:]  
+            benchmark_returns = benchmark_returns[-minlen:]  
+        else:  
+            return 1.00  
+    returns_matrix = np.vstack([algorithm_returns, benchmark_returns])  
+    C = np.cov(returns_matrix, ddof=1)  
+    algorithm_covariance = C[0][1]  
+    benchmark_variance = C[1][1]  
+    beta = algorithm_covariance / benchmark_variance
+
+    return beta
+
+def scale(wild, a_lo, a_hi, b_lo, b_hi):  
+    ''' Based on wild value relative to a_lo_hi range,  
+          return its analog within b_hi_lo, with min b_lo and max b_hi  
+    '''  
+    return min(b_hi, max(b_lo, (b_hi * (wild - a_lo)) / (a_hi - a_lo)))
