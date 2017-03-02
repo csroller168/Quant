@@ -3,7 +3,6 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
 Ranking algorithm:
-    - base on current alg
     - screen for low P/E, high book val/share
     - consider brand favorability factor
     - use smart screen point-based ranks
@@ -18,76 +17,140 @@ Calculate long and short buckets:
 - Use same in/out indicators - unempl + SPY momentum
 - when in the market, buy n% long, m% short
 - when out of market, short 50% short bucket, 50% SPY
+- Experiment:  Short only stocks in one sector e.g. retail
 
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
-from quantopian.pipeline import Pipeline
+from quantopian.pipeline import Pipeline, CustomFactor
+from quantopian.pipeline.data import morningstar
+from quantopian.pipeline.data.quandl import fred_unrate
+from quantopian.pipeline.filters.morningstar import Q1500US
 from quantopian.pipeline.data.builtin import USEquityPricing
-from quantopian.pipeline.factors import AverageDollarVolume
-from quantopian.pipeline.filters.morningstar import Q500US
  
 # Constants
 UTILITIES_SECTOR = 207
 REBALANCE_DAY = 6
 NUM_LONG = 7
 NUM_SHORT = 7
+
+class CurrUnemplFactor(CustomFactor):
+    window_length = 1
+    inputs = [fred_unrate.value]
     
+    def compute(self, today, assets, out, unempl):
+        out[:] = unempl
+
 def initialize(context):
+    context.long_bucket = []
+    context.short_bucket = []
      
     # Record tracking variables at the end of each day.
     schedule_function(record_vars, date_rules.every_day(), time_rules.market_close())
     
-    # Try to execute every day to cover unexecuted orders
+    # Try to execute orders every day to cover unexecuted orders
     schedule_function(execute_orders,
                       date_rules.every_day(),
                       time_rules.market_open(minutes=5))
-    
-    # Rebalance once per month
-    schedule_function(rebalance,
-                      date_rules.month_start(days_offset=REBALANCE_DAY),
-                      time_rules.market_open(minutes=1))
      
-    # Create our dynamic stock selector.
-    attach_pipeline(make_pipeline(), 'my_pipeline')
+    # Set up pipeline
+    pipe = Pipeline()  
+    attach_pipeline(pipe, name='pipe')
+    build_pipeline(pipe)
          
-def make_pipeline():
-    # Base universe set to the Q500US
-    base_universe = Q500US()
+def build_pipeline(pipe):
+    universe_filter = Q1500US()
 
-    # Factor of yesterday's close price.
-    yesterday_close = USEquityPricing.close.latest
+    # Screen for no utilities and minimum volume
+    sector_code = morningstar.asset_classification.morningstar_sector_code.latest
+    sector_filter = (sector_code != UTILITIES_SECTOR)
+    
+    # Screen for high current dividend yield
+    div_yld = morningstar.valuation_ratios.dividend_yield.latest
+    high_div_filter = (div_yld > .04)
+    no_div_filter = ~(div_yld > 0.0)
+    pipe.add(div_yld, 'div_yld')
+    
+    # Track financial metrics
+    debtToEquity = morningstar.operation_ratios.long_term_debt_equity_ratio.latest
+    pipe.add(debtToEquity, 'debtToEquity')
+    
+    roe = morningstar.operation_ratios.roe.latest
+    pipe.add(roe, 'roe')
+    close = USEquityPricing.close.latest
+    pipe.add(close, 'close')
+    ebit_mgn = morningstar.operation_ratios.ebitda_margin.latest
+    pipe.add(ebit_mgn, 'ebit_mgn')
      
-    pipe = Pipeline(
-        screen = base_universe,
-        columns = {
-            'close': yesterday_close,
-        }
-    )
+    pipe.set_screen(universe_filter &
+                    sector_filter &
+                    (high_div_filter | no_div_filter))
     return pipe
  
 def before_trading_start(context, data):
-    pass
+    #TBD: Filter pipeline output to security list
+    pipe = pipeline_output('pipe')
+    #TBD: On first trading day after rebalance day, re-calculate unempl and rebalance portfolio
+    if get_datetime().day >= 30:
+        # Rebalance
+        context.long_bucket = get_long_bucket(pipe)
+        context.short_bucket = get_short_bucket(pipe)
+
+def get_long_bucket(pipe):
+    # eventually, pick long and short buckets using smart-screeer logic
+    return pipe[pipe.div_yld > 0.04].iloc[:NUM_LONG].index[:NUM_LONG]
+    
+def get_short_bucket(pipe):
+    # eventually, pick long and short buckets using smart-screeer logic
+    return pipe[
+        ~(pipe.div_yld > 0.0)].iloc[:NUM_SHORT].index[:NUM_SHORT]
 
 def execute_orders(context,data):
-    pass
+    # Cover stocks no longer in lists
+    for stock in context.portfolio.positions.iterkeys():  
+        if stock not in context.long_bucket and \
+            stock not in context.short_bucket and \
+            data.can_trade(stock):
+                order_target(stock, 0)
+    
+    # Buy longs
+    for stock in context.long_bucket:
+        if data.can_trade(stock):
+            order_target_percent(stock, (1.0 / NUM_LONG))
+    
+    # Sell shorts
+    for stock in context.short_bucket:
+        if data.can_trade(stock):
+            order_target_percent(stock, (-1.0 / NUM_SHORT))
  
 def record_vars(context, data):
-    pass
-
-def rebalance(context,data):
-    pass
-
-def get_long_bucket():
-    bucket = [sid(8554)]
-    return bucket
-
-def get_short_bucket():
-    bucket = [sid(2673)]
-    return bucket
-
-def is_market_favorable():
-    return True
-    pass
+    # Plot variables at the end of each day.
+    long_count = 0
+    short_count = 0
+    leverage = context.account.leverage
+    #unempl = context.unempl
+    #currUnempl = unempl[-1]
+    #pastUnempl = (unempl[-4] + unempl[-3] + unempl[-2]) / 3
+    #beta = context.beta
+    
+    log_str = "holding: "
+    for position in context.portfolio.positions.itervalues():
+        if position.amount > 0:
+            long_count += 1
+            log_str += position.sid.symbol + ", "
+        if position.amount < 0:
+            short_count += 1
+            log_str += position.sid.symbol + "(short), "
+    
+    # Raise an alert if short_count or leverage out of contest range
+    if short_count == 0:
+        short_count = 99
+    if leverage > 3:
+        leverage = 99
+    
+    # Plot the counts
+    #record(num_long=long_count, num_short=short_count, currUnempl=currUnempl, pastUnempl=pastUnempl, leverage=leverage)
+    record(num_long=long_count, short_count=short_count, leverage=leverage)
+    log.info(log_str)
 
 def build_unempl_collection():
     unempl_list = [
