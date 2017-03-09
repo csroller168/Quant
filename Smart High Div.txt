@@ -3,10 +3,11 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
 TODO
-- in/out of market indicators
-- double-check order execution logic
-- pick longs via smartscreen custom factor
-- pick shorts
+- populate short bucket via smartscreen custom factors
+- assign weights via link below
+    - set base leverage for long/short based on favorability indicators
+- Execute once at algorithm start
+- Try to replace existing unemployment logic with calls like result = run_pipeline(make_pipeline(), '2015-05-05', '2015-05-05')
 
 Ranking algorithm notes:
     - screen for low P/E, high book val/share
@@ -32,12 +33,12 @@ from quantopian.pipeline.data import morningstar
 from quantopian.pipeline.data.quandl import fred_unrate
 from quantopian.pipeline.filters.morningstar import Q1500US
 from quantopian.pipeline.data.builtin import USEquityPricing
+import numpy as np
  
 # Constants
 LoggingEnabled = False
 UTILITIES_SECTOR = 207
-REBALANCE_DAY = 5
-NUM_LONG = 7
+NUM_LONG = 15
 NUM_SHORT = 7
 
 class UnemplData(object):
@@ -52,6 +53,29 @@ class UnemplData(object):
         pastAvg = (self.pastData[-4] + self.pastData[-3] + self.pastData[-2]) / 3
         return current > pastAvg
 
+class LongRank(CustomFactor):
+    window_length = 1
+    inputs = [morningstar.valuation_ratios.dividend_yield,
+             morningstar.operation_ratios.ebitda_margin,
+             morningstar.valuation.market_cap,
+             morningstar.operation_ratios.long_term_debt_equity_ratio]
+    
+    def topScore(self, metric, percentile, multiple):
+        return multiple * (metric > np.nanpercentile(metric, percentile)).astype(int)
+    
+    def bottomScore(self, metric, percentile, multiple):
+        return multiple * (metric < np.nanpercentile(metric, percentile)).astype(int)
+    
+    def compute(self, today, assets, out, divYld, ebitdaMgn, mktCap, ltde):
+        out[:] = self.topScore(divYld, 70, 1) + \
+            self.topScore(divYld, 90, 2) + \
+            self.topScore(ebitdaMgn, 70, 1) + \
+            self.topScore(ebitdaMgn, 90, 2) + \
+            self.topScore(mktCap, 70, 1) + \
+            self.topScore(mktCap, 90, 2) + \
+            self.bottomScore(ltde, 30, 1) + \
+            self.bottomScore(ltde, 10, 2)
+
 class CurrUnemplFactor(CustomFactor):
     window_length = 1
     inputs = [fred_unrate.value]
@@ -63,12 +87,12 @@ def initialize(context):
     # Initialize context variables
     context.long_bucket = []
     context.short_bucket = []
-    context.rebalanceDue = False
+    context.rebalanceDue = True
     context.unemplData = UnemplData(build_past_data())
     
     # Rebalance once per month
     schedule_function(set_rebalance_due,
-                      date_rules.month_start(days_offset=REBALANCE_DAY-2),
+                      date_rules.month_start(days_offset=3),
                       time_rules.market_close())
     
     # Record tracking variables at the end of each day.
@@ -92,21 +116,11 @@ def build_pipeline(pipe):
     sector_filter = (sector_code != UTILITIES_SECTOR)
     
     # Screens
-    div_yld = morningstar.valuation_ratios.dividend_yield.latest
-    high_div_filter = (div_yld > .04)
-    no_div_filter = ~(div_yld > 0.0)
-    pipe.add(div_yld, 'div_yld')
-    
-    # Track financial metrics
-    pipe.add(morningstar.operation_ratios.long_term_debt_equity_ratio.latest, 'debtToEquity')
-    pipe.add(morningstar.operation_ratios.roe.latest, 'roe')
-    pipe.add(USEquityPricing.close.latest, 'close')
-    pipe.add(morningstar.operation_ratios.ebitda_margin.latest, 'ebit_mgn')
     pipe.add(CurrUnemplFactor(), 'unempl')
+    pipe.add(LongRank(), 'longRank')
     
     pipe.set_screen(universe_filter &
-                    sector_filter &
-                    (high_div_filter | no_div_filter))
+                    sector_filter)
     return pipe
 
 def set_rebalance_due(context, data):
@@ -116,9 +130,7 @@ def before_trading_start(context, data):
     if not context.rebalanceDue:
         return
     context.rebalanceDue = False
-    log.info("REBALANCING")
     
-    #TBD: Filter pipeline output to security list
     pipe = pipeline_output('pipe')
     
     # Recalculate favorability
@@ -129,13 +141,10 @@ def before_trading_start(context, data):
     context.short_bucket = get_short_bucket(pipe)
 
 def get_long_bucket(pipe):
-    # TODO eventually, pick long and short buckets using smart-screeer logic
-    return pipe[pipe.div_yld > 0.04].iloc[:NUM_LONG].index[:NUM_LONG]
+    return pipe.sort_values(by='longRank', ascending=False).index[:NUM_LONG]
     
 def get_short_bucket(pipe):
-    # TODO eventually, pick long and short buckets using smart-screeer logic
-    return pipe[
-        ~(pipe.div_yld > 0.0)].iloc[:NUM_SHORT].index[:NUM_SHORT]
+    return pipe.sort_values(by='longRank', ascending=True).index[:NUM_SHORT]
 
 def execute_orders(context,data):
     # Cover stocks no longer in lists
@@ -146,15 +155,21 @@ def execute_orders(context,data):
                 order_target(stock, 0)
     
     # Buy longs
-    for stock in context.long_bucket:
+    for stock in context.long_bucket[:NUM_LONG]:
         if data.can_trade(stock):
             order_target_percent(stock, (1.0 / NUM_LONG))
     
     # Sell shorts
-    for stock in context.short_bucket:
+    for stock in context.short_bucket[:NUM_SHORT]:
         if data.can_trade(stock):
             order_target_percent(stock, (-1.0 / NUM_SHORT))
 
+def momentumFavorable(data):
+    spy = symbol('SPY')
+    mavgShort = data.history(spy, 'price', 50, '1d').mean()
+    mavgLong = data.history(spy, 'price', 200, '1d').mean()
+    return mavgShort > mavgLong
+            
 def record_vars(context, data):
     if not LoggingEnabled:
         return
