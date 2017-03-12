@@ -3,10 +3,10 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
 TODO
-- populate short bucket via smartscreen custom factors
 - assign weights via link below
     - set base leverage for long/short based on favorability indicators
 - Execute once at algorithm start
+- refine screens
 - Try to replace existing unemployment logic with calls like result = run_pipeline(make_pipeline(), '2015-05-05', '2015-05-05')
 
 Ranking algorithm notes:
@@ -60,21 +60,37 @@ class LongRank(CustomFactor):
              morningstar.valuation.market_cap,
              morningstar.operation_ratios.long_term_debt_equity_ratio]
     
-    def topScore(self, metric, percentile, multiple):
-        return multiple * (metric > np.nanpercentile(metric, percentile)).astype(int)
-    
-    def bottomScore(self, metric, percentile, multiple):
-        return multiple * (metric < np.nanpercentile(metric, percentile)).astype(int)
-    
     def compute(self, today, assets, out, divYld, ebitdaMgn, mktCap, ltde):
-        out[:] = self.topScore(divYld, 70, 1) + \
-            self.topScore(divYld, 90, 2) + \
-            self.topScore(ebitdaMgn, 70, 1) + \
-            self.topScore(ebitdaMgn, 90, 2) + \
-            self.topScore(mktCap, 70, 1) + \
-            self.topScore(mktCap, 90, 2) + \
-            self.bottomScore(ltde, 30, 1) + \
-            self.bottomScore(ltde, 10, 2)
+        out[:] = topScore(divYld, 60, 20) + \
+            topScore(divYld, 85, 30) + \
+            topScore(ebitdaMgn, 60, 8) + \
+            topScore(ebitdaMgn, 85, 16) + \
+            topScore(mktCap, 60, 20) + \
+            topScore(mktCap, 85, 30) + \
+            bottomScore(ltde, 40, 14) + \
+            bottomScore(ltde, 15, 24)
+
+class ShortRank(CustomFactor):
+    window_length = 1
+    inputs = [morningstar.valuation_ratios.dividend_yield,
+             morningstar.valuation.market_cap,
+             USEquityPricing.close,
+             morningstar.operation_ratios.long_term_debt_equity_ratio,
+             morningstar.operation_ratios.roe,
+             morningstar.valuation_ratios.pe_ratio]
+    
+    def compute(self, today, assets, out, divYld, mktCap, close, ltde, roe, pe):
+        out[:] = bottomScore(divYld, 10, 20) + \
+            bottomScore(mktCap, 50, 50) + \
+            bottomScore(mktCap, 20, -50) + \
+            bottomScore(close, 50, 20) + \
+            bottomScore(close, 20, -20) + \
+            topScore(ltde, 60, 20) + \
+            topScore(ltde, 20, 20) + \
+            bottomScore(roe, 40, 20) + \
+            topScore(pe, 60, 20) + \
+            topScore(pe, 20, 20)
+            
 
 class CurrUnemplFactor(CustomFactor):
     window_length = 1
@@ -83,6 +99,12 @@ class CurrUnemplFactor(CustomFactor):
     def compute(self, today, assets, out, unempl):
         out[:] = unempl
 
+def topScore(metric, percentile, multiple):
+    return multiple * (metric > np.nanpercentile(metric, percentile)).astype(int)
+
+def bottomScore(metric, percentile, multiple):
+    return multiple * (metric < np.nanpercentile(metric, percentile)).astype(int)
+        
 def initialize(context):
     # Initialize context variables
     context.long_bucket = []
@@ -118,6 +140,7 @@ def build_pipeline(pipe):
     # Screens
     pipe.add(CurrUnemplFactor(), 'unempl')
     pipe.add(LongRank(), 'longRank')
+    pipe.add(ShortRank(), 'shortRank')
     
     pipe.set_screen(universe_filter &
                     sector_filter)
@@ -144,7 +167,7 @@ def get_long_bucket(pipe):
     return pipe.sort_values(by='longRank', ascending=False).index[:NUM_LONG]
     
 def get_short_bucket(pipe):
-    return pipe.sort_values(by='longRank', ascending=True).index[:NUM_SHORT]
+    return pipe.sort_values(by='shortRank', ascending=False).index[:NUM_SHORT]
 
 def execute_orders(context,data):
     # Cover stocks no longer in lists
