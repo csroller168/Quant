@@ -3,11 +3,10 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
 TODO
-- assign weights via link below
-    - set base leverage for long/short based on favorability indicators
-- Execute once at algorithm start
-- refine screens
 - Try to replace existing unemployment logic with calls like result = run_pipeline(make_pipeline(), '2015-05-05', '2015-05-05')
+- test for momentum/unempl favorability and short market if unfavorable
+- set base leverage for long/short based on favorability indicators
+- refine screens
 
 Ranking algorithm notes:
     - screen for low P/E, high book val/share
@@ -31,10 +30,11 @@ from quantopian.algorithm import attach_pipeline, pipeline_output
 from quantopian.pipeline import Pipeline, CustomFactor
 from quantopian.pipeline.data import morningstar
 from quantopian.pipeline.data.quandl import fred_unrate
-from quantopian.pipeline.filters.morningstar import Q1500US
+from quantopian.pipeline.filters.morningstar import Q500US
 from quantopian.pipeline.data.builtin import USEquityPricing
 import numpy as np
- 
+import scipy
+
 # Constants
 LoggingEnabled = False
 UTILITIES_SECTOR = 207
@@ -131,7 +131,7 @@ def initialize(context):
     build_pipeline(pipe)
     
 def build_pipeline(pipe):
-    universe_filter = Q1500US()
+    universe_filter = Q500US()
     
     # Screen for no utilities and minimum volume
     sector_code = morningstar.asset_classification.morningstar_sector_code.latest
@@ -160,14 +160,14 @@ def before_trading_start(context, data):
     context.unemplData.cache_latest(pipe['unempl'][0])
     
     # Rebalance
-    context.long_bucket = get_long_bucket(pipe)
-    context.short_bucket = get_short_bucket(pipe)
+    context.long_bucket = get_bucket(pipe.sort_values(by='longRank', ascending=False).index[:NUM_LONG], data)
+    context.short_bucket = get_bucket(pipe.sort_values(by='shortRank', ascending=False).index[:NUM_SHORT], data)
 
-def get_long_bucket(pipe):
-    return pipe.sort_values(by='longRank', ascending=False).index[:NUM_LONG]
-    
-def get_short_bucket(pipe):
-    return pipe.sort_values(by='shortRank', ascending=False).index[:NUM_SHORT]
+def get_bucket(symbols, data):
+    prices = data.history(symbols, 'price', 300, '1d')
+    daily_R = prices.pct_change().dropna()
+    weights = get_reduced_correlation_weights(daily_R[symbols])
+    return weights
 
 def execute_orders(context,data):
     # Cover stocks no longer in lists
@@ -178,14 +178,14 @@ def execute_orders(context,data):
                 order_target(stock, 0)
     
     # Buy longs
-    for stock in context.long_bucket[:NUM_LONG]:
+    for stock, weight in context.long_bucket.iteritems():
         if data.can_trade(stock):
-            order_target_percent(stock, (1.0 / NUM_LONG))
+            order_target_percent(stock, weight)
     
     # Sell shorts
-    for stock in context.short_bucket[:NUM_SHORT]:
+    for stock, weight in context.short_bucket.iteritems():
         if data.can_trade(stock):
-            order_target_percent(stock, (-1.0 / NUM_SHORT))
+            order_target_percent(stock, -1 * weight)
 
 def momentumFavorable(data):
     spy = symbol('SPY')
@@ -222,6 +222,38 @@ def record_vars(context, data):
     record(num_long=long_count, short_count=short_count, leverage=leverage)
     log.info(log_str)
 
+def get_reduced_correlation_weights(returns, risk_adjusted=True):
+    """
+    Implementation of minimum correlation algorithm.
+    ref: http://cssanalytics.com/doc/MCA%20Paper.pdf
+    
+    :Params:
+        :returns <Pandas DataFrame>:Timeseries of asset returns
+        :risk_adjusted <boolean>: If True, asset weights are scaled
+                                  by their standard deviations
+    """
+    correlations = returns.corr()
+    adj_correlations = get_adjusted_cor_matrix(correlations)
+    initial_weights = adj_correlations.T.mean()
+
+    ranks = initial_weights.rank()
+    ranks /= ranks.sum()
+
+    weights = adj_correlations.dot(ranks)
+    weights /= weights.sum()
+
+    if risk_adjusted:
+        weights = weights / returns.std()
+        weights /= weights.sum()
+    return weights
+
+def get_adjusted_cor_matrix(cor):
+    values = cor.values.flatten()
+    mu = np.mean(values)
+    sigma = np.std(values)
+    distribution = scipy.stats.norm(mu, sigma)
+    return 1 - cor.apply(lambda x: distribution.cdf(x))
+    
 def build_past_data():
     unempl_list = [
         5.3, 5.2, 5.2, 5.1, 4.9, 5, 4.9, 4.8, 4.9, 4.7, 4.6, 4.7,
