@@ -3,8 +3,6 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
 TODO
-- Try to replace existing unemployment logic with calls like result = run_pipeline(make_pipeline(), '2015-05-05', '2015-05-05')
-- test for momentum/unempl favorability and short market if unfavorable
 - set base leverage for long/short based on favorability indicators
 - refine screens
 
@@ -14,17 +12,6 @@ Ranking algorithm notes:
     - use smart screen point-based ranks
     - rank longs and shorts separately
 
-Calculate long and short buckets:
-    - use top X% of long/short ranks
-    - optimize weights to minimize covariance
-        - https://www.quantopian.com/posts/quantopian-lecture-series-the-good-the-bad-and-the-correlated
-
-- rebalance monthly
-- Use same in/out indicators - unempl + SPY momentum
-- when in the market, buy n% long, m% short
-- when out of market, short 50% short bucket, 50% SPY
-- Experiment:  Short only stocks in one sector e.g. retail
-
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
 from quantopian.pipeline import Pipeline, CustomFactor
@@ -33,10 +20,11 @@ from quantopian.pipeline.data.quandl import fred_unrate
 from quantopian.pipeline.filters.morningstar import Q500US
 from quantopian.pipeline.data.builtin import USEquityPricing
 import numpy as np
+import pandas as pd
 import scipy
 
 # Constants
-LoggingEnabled = False
+LoggingEnabled = True
 UTILITIES_SECTOR = 207
 NUM_LONG = 15
 NUM_SHORT = 7
@@ -90,7 +78,6 @@ class ShortRank(CustomFactor):
             bottomScore(roe, 40, 20) + \
             topScore(pe, 60, 20) + \
             topScore(pe, 20, 20)
-            
 
 class CurrUnemplFactor(CustomFactor):
     window_length = 1
@@ -107,8 +94,8 @@ def bottomScore(metric, percentile, multiple):
         
 def initialize(context):
     # Initialize context variables
-    context.long_bucket = []
-    context.short_bucket = []
+    context.long_bucket = pd.Series([])
+    context.short_bucket = pd.Series([])
     context.rebalanceDue = True
     context.unemplData = UnemplData(build_past_data())
     
@@ -144,6 +131,7 @@ def build_pipeline(pipe):
     
     pipe.set_screen(universe_filter &
                     sector_filter)
+    
     return pipe
 
 def set_rebalance_due(context, data):
@@ -158,9 +146,11 @@ def before_trading_start(context, data):
     
     # Recalculate favorability
     context.unemplData.cache_latest(pipe['unempl'][0])
+    favorable = momentumFavorable(data) or context.unemplData.is_favorable()
     
     # Rebalance
-    context.long_bucket = get_bucket(pipe.sort_values(by='longRank', ascending=False).index[:NUM_LONG], data)
+    if favorable:
+        context.long_bucket = get_bucket(pipe.sort_values(by='longRank', ascending=False).index[:NUM_LONG], data)
     context.short_bucket = get_bucket(pipe.sort_values(by='shortRank', ascending=False).index[:NUM_SHORT], data)
 
 def get_bucket(symbols, data):
@@ -218,7 +208,6 @@ def record_vars(context, data):
         leverage = 99
     
     # Plot the counts
-    #record(num_long=long_count, num_short=short_count, currUnempl=currUnempl, pastUnempl=pastUnempl, leverage=leverage)
     record(num_long=long_count, short_count=short_count, leverage=leverage)
     log.info(log_str)
 
@@ -275,7 +264,7 @@ def build_past_data():
         7.2, 7.2, 6.9, 6.7, 6.6, 6.7, 6.7, 6.2, 6.3, 6.1, 6.2, 6.2,
         5.9, 5.7, 5.8, 5.6, 5.7, 5.5, 5.4, 5.4, 5.5, 5.3, 5.2, 5.1,
         5, 5, 5, 5, 4.9, 4.9, 5.0, 5.0, 4.7, 4.9, 4.9, 4.9, 4.9, 
-        4.8, 4.6, 4.7, 4.8]
+        4.8, 4.6, 4.7, 4.8, 4.7]
     
     # Strip future values
     now = get_datetime()
