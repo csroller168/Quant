@@ -3,8 +3,9 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
 TODO
+- refine screens - consider copying the long screen from the old algo
 - set base leverage for long/short based on favorability indicators
-- refine screens
+- consider reduce beta by shorting a bit of SPY if beta is pretty low and smooth
 
 Ranking algorithm notes:
     - screen for low P/E, high book val/share
@@ -39,7 +40,7 @@ class UnemplData(object):
     def is_favorable(self):
         current = self.pastData[-1]
         pastAvg = (self.pastData[-4] + self.pastData[-3] + self.pastData[-2]) / 3
-        return current > pastAvg
+        return current <= pastAvg
 
 class LongRank(CustomFactor):
     window_length = 1
@@ -149,6 +150,7 @@ def before_trading_start(context, data):
     favorable = momentumFavorable(data) or context.unemplData.is_favorable()
     
     # Rebalance
+    context.long_bucket = pd.Series([])
     if favorable:
         context.long_bucket = get_bucket(pipe.sort_values(by='longRank', ascending=False).index[:NUM_LONG], data)
     context.short_bucket = get_bucket(pipe.sort_values(by='shortRank', ascending=False).index[:NUM_SHORT], data)
@@ -170,7 +172,7 @@ def execute_orders(context,data):
     # Buy longs
     for stock, weight in context.long_bucket.iteritems():
         if data.can_trade(stock):
-            order_target_percent(stock, weight)
+            order_target_percent(stock, 1 * weight)
     
     # Sell shorts
     for stock, weight in context.short_bucket.iteritems():
@@ -245,30 +247,25 @@ def get_adjusted_cor_matrix(cor):
     
 def build_past_data():
     unempl_list = [
-        5.3, 5.2, 5.2, 5.1, 4.9, 5, 4.9, 4.8, 4.9, 4.7, 4.6, 4.7,
-        4.6, 4.6, 4.7, 4.3, 4.4, 4.5, 4.5, 4.5, 4.6, 4.5, 4.4, 4.4,
-        4.3, 4.4, 4.2, 4.3, 4.2, 4.3, 4.3, 4.2, 4.2, 4.1, 4.1, 4,
-        4, 4.1, 4, 3.8, 4, 4, 4, 4.1, 3.9, 3.9, 3.9, 3.9, 4.2, 4.2,
-        4.3, 4.4, 4.3, 4.5, 4.6, 4.9, 5, 5.3, 5.5, 5.7, 5.7, 5.7,
-        5.7, 5.9, 5.8, 5.8, 5.8, 5.7, 5.7, 5.7, 5.9, 6, 5.8, 5.9,
-        5.9, 6, 6.1, 6.3, 6.2, 6.1, 6.1, 6, 5.8, 5.7, 5.7, 5.6, 5.8,
-        5.6, 5.6, 5.6, 5.5, 5.4, 5.4, 5.5, 5.4, 5.4, 5.3, 5.4, 5.2,
-        5.2, 5.1, 5, 5, 4.9, 5, 5, 5, 4.9, 4.7, 4.8, 4.7, 4.7, 4.6,
-        4.6, 4.7, 4.7, 4.5, 4.4, 4.5, 4.4, 4.6, 4.5, 4.4, 4.5, 4.4,
-        4.6, 4.7, 4.6, 4.7, 4.7, 4.7, 5, 5, 4.9, 5.1, 5, 5.4, 5.6,
-        5.8, 6.1, 6.1, 6.5, 6.8, 7.3, 7.8, 8.3, 8.7, 9, 9.4, 9.5,
-        9.5, 9.6, 9.8, 10, 9.9, 9.9, 9.8, 9.8, 9.9, 9.9, 9.6, 9.4,
-        9.4, 9.5, 9.5, 9.4, 9.8, 9.3, 9.1, 9, 9, 9.1, 9, 9.1, 9, 9,
-        9, 8.8, 8.6, 8.5, 8.3, 8.3, 8.2, 8.2, 8.2, 8.2, 8.2, 8.1,
-        7.8, 7.8, 7.7, 7.9, 8, 7.7, 7.5, 7.6, 7.5, 7.5, 7.3, 7.3,
-        7.2, 7.2, 6.9, 6.7, 6.6, 6.7, 6.7, 6.2, 6.3, 6.1, 6.2, 6.2,
-        5.9, 5.7, 5.8, 5.6, 5.7, 5.5, 5.4, 5.4, 5.5, 5.3, 5.2, 5.1,
-        5, 5, 5, 5, 4.9, 4.9, 5.0, 5.0, 4.7, 4.9, 4.9, 4.9, 4.9, 
-        4.8, 4.6, 4.7, 4.8, 4.7]
+        5.8,5.9,5.9,6,6.1,6.3,6.2,6.1,6.1,6,5.8,5.7,
+        5.7,5.6,5.8,5.6,5.6,5.6,5.5,5.4,5.4,5.5,5.4,5.4,
+        5.3,5.4,5.2,5.2,5.1,5,5,4.9,5,5,5,4.9,
+        4.7,4.8,4.7,4.7,4.6,4.6,4.7,4.7,4.5,4.4,4.5,4.4,
+        4.6,4.5,4.4,4.5,4.4,4.6,4.7,4.6,4.7,4.7,4.7,5,
+        5,4.9,5.1,5,5.4,5.6,5.8,6.1,6.1,6.5,6.8,7.3,
+        7.8,8.3,8.7,9,9.4,9.5,9.5,9.6,9.8,10,9.9,9.9,
+        9.8,9.8,9.9,9.9,9.6,9.4,9.4,9.5,9.5,9.4,9.8,9.3,
+        9.1,9,9,9.1,9,9.1,9,9,9,8.8,8.6,8.5,
+        8.3,8.3,8.2,8.2,8.2,8.2,8.2,8.1,7.8,7.8,7.7,7.9,
+        8,7.7,7.5,7.6,7.5,7.5,7.3,7.3,7.2,7.2,6.9,6.7,
+        6.6,6.7,6.7,6.2,6.3,6.1,6.2,6.2,5.9,5.7,5.8,5.6,
+        5.7,5.5,5.4,5.4,5.5,5.3,5.2,5.1,5,5,5,5,
+        4.9,4.9,5,5,4.7,4.9,4.9,4.9,4.9,4.8,4.6,4.7,
+        4.8,4.7]
     
     # Strip future values
     now = get_datetime()
-    monthOffset = ((now.year - 1997) * 12) + now.month
+    monthOffset = ((now.year - 2003) * 12) + now.month
     unempl_list = unempl_list[:monthOffset]
     
     return unempl_list
