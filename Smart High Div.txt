@@ -3,7 +3,6 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
 TODO
-- take screen criteria from previous algorithm
 - reduce beta
     - short a bit of SPY if beta is pretty low and smooth (or long SPY during pullout)
 - tune leverage
@@ -49,38 +48,12 @@ class UnemplData(object):
         pastAvg = (self.pastData[-4] + self.pastData[-3] + self.pastData[-2]) / 3
         return current <= pastAvg
 
-class SmartRank(CustomFactor):
-    window_length = 1
-    inputs = [morningstar.income_statement.gross_profit,
-              morningstar.income_statement.operating_income,
-              morningstar.cash_flow_statement.net_income,
-              morningstar.income_statement.ebitda,
-              morningstar.valuation.market_cap]
-    window_length = 1
-    
-    def compute(self, today, assets, out, gross_profit, operating_income, 
-                net_income, ebitda, market_cap):
-        out[:] = smartScore(gross_profit, 0.326) + \
-                 smartScore(operating_income, 0.224) + \
-                 smartScore(net_income, 0.192) + \
-                 smartScore(ebitda, 0.133) + \
-                 smartScore(market_cap, 0.192)
-
 class CurrUnemplFactor(CustomFactor):
     window_length = 1
     inputs = [fred_unrate.value]
     
     def compute(self, today, assets, out, unempl):
         out[:] = unempl
-
-def smartScore(metric, weight):
-    return (weight) * (rankdata(metric, method='min') - len(metric)/2)
-        
-def topScore(metric, percentile, multiple):
-    return multiple * (metric > np.nanpercentile(metric, percentile)).astype(int)
-
-def bottomScore(metric, percentile, multiple):
-    return multiple * (metric < np.nanpercentile(metric, percentile)).astype(int)
         
 def initialize(context):
     # Initialize context variables
@@ -114,12 +87,34 @@ def build_pipeline(pipe):
     sector_code = morningstar.asset_classification.morningstar_sector_code.latest
     sector_filter = (sector_code != UTILITIES_SECTOR)
     
+    symbol_filter = ~(morningstar.share_class_reference.symbol.latest.matches('TPC')) & ~(morningstar.share_class_reference.symbol.latest.matches('NFLX'))
+    
+    div_yld = morningstar.valuation_ratios.dividend_yield.latest
+    high_div_filter = (div_yld > .04)
+    no_div_filter = ~(div_yld > 0.0)
+    
     # Screens
     pipe.add(CurrUnemplFactor(), 'unempl')
-    pipe.add(SmartRank(), 'smartRank')
+    pipe.add(div_yld, 'div_yld')
+    ebit_mgn = morningstar.operation_ratios.ebitda_margin.latest
+    pipe.add(ebit_mgn, 'ebit_mgn')
+    mkt_cap = morningstar.valuation.market_cap.latest
+    pipe.add(mkt_cap, 'mkt_cap')
+    debtToEquity = morningstar.operation_ratios.long_term_debt_equity_ratio.latest
+    pipe.add(debtToEquity, 'debtToEquity')
+    roe = morningstar.operation_ratios.roe.latest
+    pipe.add(roe, 'roe')
+    pe = morningstar.valuation_ratios.pe_ratio.latest
+    pipe.add(pe, 'pe')
+    close = USEquityPricing.close.latest
+    pipe.add(close, 'close')
+    revenue_growth = morningstar.operation_ratios.revenue_growth.latest
+    pipe.add(revenue_growth, 'revenue_growth')
     
     pipe.set_screen(universe_filter &
-                    sector_filter)
+                    sector_filter &
+                    symbol_filter &
+                    (high_div_filter | no_div_filter))
     
     return pipe
 
@@ -140,8 +135,20 @@ def before_trading_start(context, data):
     # Rebalance
     context.long_bucket = pd.Series([])
     if favorable:
-        context.long_bucket = get_bucket(pipe.sort_values(by='smartRank', ascending=False).index[:NUM_LONG], data)
-    context.short_bucket = get_bucket(pipe.sort_values(by='smartRank', ascending=True).index[:NUM_SHORT], data)
+        long_candidates = pipe[
+            (pipe.div_yld > 0.04) &
+            (pipe.ebit_mgn > 0.03) &
+            (pipe.mkt_cap > 4000000000)].sort_values(by='mkt_cap', ascending=False).iloc[:int(NUM_LONG*5)]
+        context.long_bucket = get_bucket(long_candidates.sort_values(by='debtToEquity', ascending=True).index[:NUM_LONG], data)
+    
+    short_candidates = pipe[
+        ~(pipe.div_yld > 0.0) &
+        (pipe.mkt_cap < 15000000000) &
+        (pipe.mkt_cap > 100000000) &
+        (pipe.close > 10) &
+        (pipe.debtToEquity > 0.5) &
+        (pipe.roe < 0)].sort_values(by='pe', ascending=False).iloc[:int(NUM_SHORT*5)]
+    context.short_bucket = get_bucket(short_candidates.sort_values(by='revenue_growth', ascending=True).index[:NUM_SHORT], data)
 
 def get_bucket(symbols, data):
     prices = data.history(symbols, 'price', 300, '1d')
@@ -249,7 +256,7 @@ def build_past_data():
         6.6,6.7,6.7,6.2,6.3,6.1,6.2,6.2,5.9,5.7,5.8,5.6,
         5.7,5.5,5.4,5.4,5.5,5.3,5.2,5.1,5,5,5,5,
         4.9,4.9,5,5,4.7,4.9,4.9,4.9,4.9,4.8,4.6,4.7,
-        4.8,4.7]
+        4.8,4.7,4.5]
     
     # Strip future values
     now = get_datetime()
