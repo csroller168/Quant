@@ -3,15 +3,21 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
 TODO
-- refine screens - consider copying the long screen from the old algo
-- set base leverage for long/short based on favorability indicators
-- consider reduce beta by shorting a bit of SPY if beta is pretty low and smooth
-
-Ranking algorithm notes:
-    - screen for low P/E, high book val/share
-    - consider brand favorability factor
-    - use smart screen point-based ranks
-    - rank longs and shorts separately
+- take screen criteria from previous algorithm
+- reduce beta
+    - short a bit of SPY if beta is pretty low and smooth (or long SPY during pullout)
+- tune leverage
+    - vary per pullout indicators
+- Check for unempl daily by watching for change in index (date posted)
+- test pullout on jobs created, not unemployment rate
+- refine screens
+    1. Use "Factor Ranking & Analysis" to identify good long and short factors
+    2. Get cross-sectional correlations of factors - see page 12 of ic research pdf and note at bottom of Factor "IC Analysis v1" notebook.  Use this to get optimal weights of factors
+        - maybe do this in the alg semi-monthly automatically?
+    3. SmartScore using the identified factors and optimal weights.  Do this separately for long and short buckets.
+    4. Experiment to determine best leverage for long/short buckets during bear/bull markets
+- consider factor IC decay - schedule times to re-assess factors (document in a notebook); 
+- Do factor analysis/calculate long/short buckets separately per industry
 
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
@@ -20,15 +26,16 @@ from quantopian.pipeline.data import morningstar
 from quantopian.pipeline.data.quandl import fred_unrate
 from quantopian.pipeline.filters.morningstar import Q500US
 from quantopian.pipeline.data.builtin import USEquityPricing
+from scipy.stats import rankdata
 import numpy as np
 import pandas as pd
 import scipy
 
-# Constants
+# Globals
 LoggingEnabled = True
 UTILITIES_SECTOR = 207
-NUM_LONG = 15
-NUM_SHORT = 7
+NUM_LONG = 200
+NUM_SHORT = 50
 
 class UnemplData(object):
     def __init__(self, pastData):
@@ -42,43 +49,22 @@ class UnemplData(object):
         pastAvg = (self.pastData[-4] + self.pastData[-3] + self.pastData[-2]) / 3
         return current <= pastAvg
 
-class LongRank(CustomFactor):
+class SmartRank(CustomFactor):
     window_length = 1
-    inputs = [morningstar.valuation_ratios.dividend_yield,
-             morningstar.operation_ratios.ebitda_margin,
-             morningstar.valuation.market_cap,
-             morningstar.operation_ratios.long_term_debt_equity_ratio]
-    
-    def compute(self, today, assets, out, divYld, ebitdaMgn, mktCap, ltde):
-        out[:] = topScore(divYld, 60, 20) + \
-            topScore(divYld, 85, 30) + \
-            topScore(ebitdaMgn, 60, 8) + \
-            topScore(ebitdaMgn, 85, 16) + \
-            topScore(mktCap, 60, 20) + \
-            topScore(mktCap, 85, 30) + \
-            bottomScore(ltde, 40, 14) + \
-            bottomScore(ltde, 15, 24)
-
-class ShortRank(CustomFactor):
+    inputs = [morningstar.income_statement.gross_profit,
+              morningstar.income_statement.operating_income,
+              morningstar.cash_flow_statement.net_income,
+              morningstar.income_statement.ebitda,
+              morningstar.valuation.market_cap]
     window_length = 1
-    inputs = [morningstar.valuation_ratios.dividend_yield,
-             morningstar.valuation.market_cap,
-             USEquityPricing.close,
-             morningstar.operation_ratios.long_term_debt_equity_ratio,
-             morningstar.operation_ratios.roe,
-             morningstar.valuation_ratios.pe_ratio]
     
-    def compute(self, today, assets, out, divYld, mktCap, close, ltde, roe, pe):
-        out[:] = bottomScore(divYld, 10, 20) + \
-            bottomScore(mktCap, 50, 50) + \
-            bottomScore(mktCap, 20, -50) + \
-            bottomScore(close, 50, 20) + \
-            bottomScore(close, 20, -20) + \
-            topScore(ltde, 60, 20) + \
-            topScore(ltde, 20, 20) + \
-            bottomScore(roe, 40, 20) + \
-            topScore(pe, 60, 20) + \
-            topScore(pe, 20, 20)
+    def compute(self, today, assets, out, gross_profit, operating_income, 
+                net_income, ebitda, market_cap):
+        out[:] = smartScore(gross_profit, 0.326) + \
+                 smartScore(operating_income, 0.224) + \
+                 smartScore(net_income, 0.192) + \
+                 smartScore(ebitda, 0.133) + \
+                 smartScore(market_cap, 0.192)
 
 class CurrUnemplFactor(CustomFactor):
     window_length = 1
@@ -87,6 +73,9 @@ class CurrUnemplFactor(CustomFactor):
     def compute(self, today, assets, out, unempl):
         out[:] = unempl
 
+def smartScore(metric, weight):
+    return (weight) * (rankdata(metric, method='min') - len(metric)/2)
+        
 def topScore(metric, percentile, multiple):
     return multiple * (metric > np.nanpercentile(metric, percentile)).astype(int)
 
@@ -127,8 +116,7 @@ def build_pipeline(pipe):
     
     # Screens
     pipe.add(CurrUnemplFactor(), 'unempl')
-    pipe.add(LongRank(), 'longRank')
-    pipe.add(ShortRank(), 'shortRank')
+    pipe.add(SmartRank(), 'smartRank')
     
     pipe.set_screen(universe_filter &
                     sector_filter)
@@ -152,8 +140,8 @@ def before_trading_start(context, data):
     # Rebalance
     context.long_bucket = pd.Series([])
     if favorable:
-        context.long_bucket = get_bucket(pipe.sort_values(by='longRank', ascending=False).index[:NUM_LONG], data)
-    context.short_bucket = get_bucket(pipe.sort_values(by='shortRank', ascending=False).index[:NUM_SHORT], data)
+        context.long_bucket = get_bucket(pipe.sort_values(by='smartRank', ascending=False).index[:NUM_LONG], data)
+    context.short_bucket = get_bucket(pipe.sort_values(by='smartRank', ascending=True).index[:NUM_SHORT], data)
 
 def get_bucket(symbols, data):
     prices = data.history(symbols, 'price', 300, '1d')
@@ -172,12 +160,12 @@ def execute_orders(context,data):
     # Buy longs
     for stock, weight in context.long_bucket.iteritems():
         if data.can_trade(stock):
-            order_target_percent(stock, 1 * weight)
+            order_target_percent(stock, 2 * weight)
     
     # Sell shorts
     for stock, weight in context.short_bucket.iteritems():
         if data.can_trade(stock):
-            order_target_percent(stock, -1 * weight)
+            order_target_percent(stock, -0.1 * weight)
 
 def momentumFavorable(data):
     spy = symbol('SPY')
