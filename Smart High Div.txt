@@ -63,6 +63,7 @@ def initialize(context):
     context.long_bucket = pd.Series([])
     context.short_bucket = pd.Series([])
     context.rebalanceDue = True
+    context.favorable = True
     context.unemplData = UnemplData(build_past_data())
     
     # Rebalance once per month
@@ -133,16 +134,15 @@ def before_trading_start(context, data):
     
     # Recalculate favorability
     context.unemplData.cache_latest(pipe['unempl'][0])
-    favorable = momentumFavorable(data) or context.unemplData.is_favorable()
+    context.favorable = momentumFavorable(data) or context.unemplData.is_favorable()
     
     # Rebalance
     context.long_bucket = pd.Series([])
-    if favorable:
-        long_candidates = pipe[
-            (pipe.div_yld > 0.04) &
-            (pipe.ebit_mgn > 0.03) &
-            (pipe.mkt_cap > 4000000000)].sort_values(by='mkt_cap', ascending=False).iloc[:int(NUM_LONG*2.5)]
-        context.long_bucket = get_bucket(long_candidates.sort_values(by='debtToEquity', ascending=True).index[:NUM_LONG], data)
+    long_candidates = pipe[
+        (pipe.div_yld > 0.04) &
+        (pipe.ebit_mgn > 0.03) &
+        (pipe.mkt_cap > 4000000000)].sort_values(by='mkt_cap', ascending=False).iloc[:int(NUM_LONG*2.5)]
+    context.long_bucket = get_bucket(long_candidates.sort_values(by='debtToEquity', ascending=True).index[:NUM_LONG], data)
     
     short_candidates = pipe[
         ~(pipe.div_yld > 0.0) &
@@ -167,15 +167,22 @@ def execute_orders(context,data):
             data.can_trade(stock):
                 order_target(stock, 0)
     
+    # Calculate long/short leverage
+    longLeverage = 1.2
+    shortLeverage = -0.8
+    if not context.favorable:
+        longLeverage = 0.3
+        shortLeverage = -0.3
+    
     # Buy longs
     for stock, weight in context.long_bucket.iteritems():
         if data.can_trade(stock):
-            order_target_percent(stock, 1.2 * weight)
+            order_target_percent(stock, longLeverage * weight)
     
     # Sell shorts
     for stock, weight in context.short_bucket.iteritems():
         if data.can_trade(stock):
-            order_target_percent(stock, -0.8 * weight)
+            order_target_percent(stock, shortLeverage * weight)
 
 def momentumFavorable(data):
     spy = symbol('SPY')
