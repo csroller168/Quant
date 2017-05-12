@@ -3,10 +3,13 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
 TODO
-- reduce beta
-    - short a bit of SPY if beta is pretty low and smooth (or long SPY during pullout)
+- get beta closer to zero during pullout
 - tune leverage
     - vary per pullout indicators
+- reduce drawdown
+    - tune screen criteria
+        - look for top offenders and screen out with fundamental metrics
+        - consider adding momemtum to the screen
 - Check for unempl daily by watching for change in index (date posted)
 - test pullout on jobs created, not unemployment rate
 - refine screens
@@ -23,7 +26,7 @@ from quantopian.algorithm import attach_pipeline, pipeline_output
 from quantopian.pipeline import Pipeline, CustomFactor
 from quantopian.pipeline.data import morningstar
 from quantopian.pipeline.data.quandl import fred_unrate
-from quantopian.pipeline.filters.morningstar import Q500US
+from quantopian.pipeline.filters.morningstar import Q1500US
 from quantopian.pipeline.data.builtin import USEquityPricing
 from scipy.stats import rankdata
 import numpy as np
@@ -33,8 +36,8 @@ import scipy
 # Globals
 LoggingEnabled = True
 UTILITIES_SECTOR = 207
-NUM_LONG = 200
-NUM_SHORT = 50
+NUM_LONG = 12
+NUM_SHORT = 12
 
 class UnemplData(object):
     def __init__(self, pastData):
@@ -81,7 +84,7 @@ def initialize(context):
     build_pipeline(pipe)
     
 def build_pipeline(pipe):
-    universe_filter = Q500US()
+    universe_filter = Q1500US()
     
     # Screen for no utilities and minimum volume
     sector_code = morningstar.asset_classification.morningstar_sector_code.latest
@@ -138,7 +141,7 @@ def before_trading_start(context, data):
         long_candidates = pipe[
             (pipe.div_yld > 0.04) &
             (pipe.ebit_mgn > 0.03) &
-            (pipe.mkt_cap > 4000000000)].sort_values(by='mkt_cap', ascending=False).iloc[:int(NUM_LONG*5)]
+            (pipe.mkt_cap > 4000000000)].sort_values(by='mkt_cap', ascending=False).iloc[:int(NUM_LONG*2.5)]
         context.long_bucket = get_bucket(long_candidates.sort_values(by='debtToEquity', ascending=True).index[:NUM_LONG], data)
     
     short_candidates = pipe[
@@ -147,7 +150,7 @@ def before_trading_start(context, data):
         (pipe.mkt_cap > 100000000) &
         (pipe.close > 10) &
         (pipe.debtToEquity > 0.5) &
-        (pipe.roe < 0)].sort_values(by='pe', ascending=False).iloc[:int(NUM_SHORT*5)]
+        (pipe.roe < 0)].sort_values(by='pe', ascending=False).iloc[:int(NUM_SHORT*2.5)]
     context.short_bucket = get_bucket(short_candidates.sort_values(by='revenue_growth', ascending=True).index[:NUM_SHORT], data)
 
 def get_bucket(symbols, data):
@@ -167,12 +170,12 @@ def execute_orders(context,data):
     # Buy longs
     for stock, weight in context.long_bucket.iteritems():
         if data.can_trade(stock):
-            order_target_percent(stock, 2 * weight)
+            order_target_percent(stock, 1.2 * weight)
     
     # Sell shorts
     for stock, weight in context.short_bucket.iteritems():
         if data.can_trade(stock):
-            order_target_percent(stock, -0.1 * weight)
+            order_target_percent(stock, -0.8 * weight)
 
 def momentumFavorable(data):
     spy = symbol('SPY')
