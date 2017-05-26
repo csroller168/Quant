@@ -3,6 +3,13 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
 TODO
+- research
+    - build list of metrics for all Q1500 - 
+        - Cache month n
+        - record stats on month n+1 for top & bottom 5% ROI
+        - plot min/max/avg/diff % for key metrics over time
+        - revise screen criteria accordingly
+        - do this programmatically month by month (possibly in next version)
 - reduce drawdown
     - tune screen criteria
         - look for top offenders and screen out with fundamental metrics
@@ -165,10 +172,17 @@ def before_trading_start(context, data):
     context.long_bucket = pd.Series([])
     long_candidates = pipe[
         (pipe.div_yld > 0.04) &
-        (pipe.ebit_mgn > 0.03) & 
+        (pipe.ebit_mgn > 0.0) & 
         (pipe.roe > 0) &
+        (pipe.debtToEquity < 2) &
+        (pipe.net_debt < 4000000000) &
+        (pipe.mkt_cap > 4000000000) &
+        (pipe.pb_ratio < 8) &
+        (pipe.pcf_ratio < 175) &
+        (pipe.pe < 50) &
+        (pipe.roe > 0)].sort_values(by='div_yld', ascending=False).iloc[:int(NUM_LONG*2.5)]
         #(data.history(pipe.index, 'price', 18, '1d').mean() < data.history(pipe.index, 'price', 7, '1d').mean()) &
-        (pipe.mkt_cap > 4000000000)].sort_values(by='div_yld', ascending=False).iloc[:int(NUM_LONG*2.5)]
+        #(pipe.mkt_cap > 4000000000)].sort_values(by='div_yld', ascending=False).iloc[:int(NUM_LONG*2.5)]
     context.long_bucket = []
     if len(long_candidates) > 0:
         context.long_bucket = get_bucket(long_candidates.sort_values(by='debtToEquity', ascending=True).index[:NUM_LONG], data)
@@ -178,11 +192,12 @@ def before_trading_start(context, data):
         (pipe.mkt_cap < 15000000000) &
         (pipe.mkt_cap > 100000000) &
         (pipe.close > 15) &
-        #(pipe.debtToEquity > 0.6) &
+        (pipe.debtToEquity > 1) &
         #(pipe.gross_margin < 0.9) &
-        #(pipe.pb_ratio > 4) &
-        (pipe.roe < 0)].sort_values(by='pe', ascending=False).iloc[:int(NUM_SHORT*2.5)]
-    context.short_bucket = get_bucket(short_candidates.sort_values(by='revenue_growth', ascending=True).index[:NUM_SHORT], data)
+        (pipe.pb_ratio > 6) &
+        (pipe.pcf_ratio > 20)].sort_values(by='debtToEquity', ascending=False).iloc[:int(NUM_SHORT*2.5)]
+        #(pipe.roe < 0)].sort_values(by='pe', ascending=False).iloc[:int(NUM_SHORT*2.5)]
+    context.short_bucket = get_bucket(short_candidates.sort_values(by='gross_profit', ascending=True).index[:NUM_SHORT], data)
 
 def get_bucket(symbols, data):
     prices = data.history(symbols, 'price', 300, '1d')
