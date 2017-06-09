@@ -3,23 +3,6 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
 TODO
-    - reduce drawdown 
-        - look at daily open/current price/previous close relationships
-        - factors for sorting
-        - other fundamental metrics for screening
-    - Test with "or" in pullout criteria
-    - increase leverage
-    - remove symbol filter
-
-    X tune sma days in indicators
-    X. try simple screen criteria
-    X. daily drawdown check
-    X. need daily rebalancing so we can screen for drawdown and still have enough stocks in bucket
-    X cap % in one stock
-    X re-calc market favorability daily
-
-vary leverage on vix or market std. dev (or futures)
-- test taking out blacklist filter
 - research
     - build list of metrics for all Q1500 - 
         - Cache month n
@@ -62,7 +45,6 @@ UTILITIES_SECTOR = 207
 REALESTATE_SECTOR = 104
 NUM_LONG = 12
 NUM_SHORT = 12
-MAX_STOCK_PCT = 0.15
 
 class UnemplData(object):
     def __init__(self, pastData):
@@ -87,12 +69,12 @@ def initialize(context):
     # Initialize context variables
     context.long_bucket = pd.Series([])
     context.short_bucket = pd.Series([])
-    context.evalFavorabilityDue = True
+    context.rebalanceDue = True
     context.favorable = True
     context.unemplData = UnemplData(build_past_data())
     
     # Rebalance once per month
-    schedule_function(set_eval_favorability_due,
+    schedule_function(set_rebalance_due,
                       date_rules.month_start(days_offset=3),
                       time_rules.market_close())
     
@@ -120,7 +102,7 @@ def build_pipeline(pipe):
     symbol_filter = ~(morningstar.share_class_reference.symbol.latest.matches('TPC')) & ~(morningstar.share_class_reference.symbol.latest.matches('NFLX'))
     
     div_yld = morningstar.valuation_ratios.dividend_yield.latest
-    high_div_filter = (div_yld > .03)
+    high_div_filter = (div_yld > .04)
     no_div_filter = ~(div_yld > 0.0)
     
     # Factors
@@ -140,6 +122,26 @@ def build_pipeline(pipe):
     pipe.add(close, 'close')
     revenue_growth = morningstar.operation_ratios.revenue_growth.latest
     pipe.add(revenue_growth, 'revenue_growth')
+    gross_margin = morningstar.operation_ratios.gross_margin.latest
+    pipe.add(gross_margin, 'gross_margin')
+    net_debt = morningstar.balance_sheet.net_debt.latest
+    pipe.add(net_debt, 'net_debt')
+    cf_yield = morningstar.valuation_ratios.cf_yield.latest
+    pipe.add(cf_yield, 'cf_yield')
+    total_assets = morningstar.balance_sheet.total_assets.latest
+    pipe.add(total_assets, 'total_assets')
+    pcf_ratio = morningstar.valuation_ratios.pcf_ratio.latest
+    pipe.add(pcf_ratio, 'pcf_ratio')
+    pb_ratio = morningstar.valuation_ratios.pb_ratio.latest
+    pipe.add(pb_ratio, 'pb_ratio')
+    total_debt = morningstar.balance_sheet.total_debt.latest
+    pipe.add(total_debt, 'total_debt')
+    cash_rtn = morningstar.valuation_ratios.cash_return.latest
+    pipe.add(cash_rtn, 'cash_rtn')
+    gross_profit = morningstar.income_statement.gross_profit.latest
+    pipe.add(gross_profit, 'gross_profit')
+    book_val_yld = morningstar.valuation_ratios.book_value_yield.latest
+    pipe.add(book_val_yld, 'book_val_yld')
     pipe.add(sector_code,'sector_code')
     symbol = morningstar.share_class_reference.symbol.latest
     pipe.add(symbol,'symbol')
@@ -152,26 +154,35 @@ def build_pipeline(pipe):
     
     return pipe
 
-def set_eval_favorability_due(context, data):
-    context.evalFavorabilityDue = True
+def set_rebalance_due(context, data):
+    context.rebalanceDue = True
 
 def before_trading_start(context, data):
+    if not context.rebalanceDue:
+        return
+    context.rebalanceDue = False
+    
     pipe = pipeline_output('pipe')
     
-    # Recalculate unempl data if needed
-    if context.evalFavorabilityDue:
-        context.unemplData.cache_latest(pipe['unempl'][0])
-        context.evalFavorabilityDue = False
-        
+    # Recalculate favorability
+    context.unemplData.cache_latest(pipe['unempl'][0])
     context.favorable = momentumFavorable(data) or context.unemplData.is_favorable()
     
     # Rebalance
     context.long_bucket = pd.Series([])
     long_candidates = pipe[
-        (pipe.div_yld > 0.03) &
-        #(pipe.mkt_cap > 4000000000) &
+        (pipe.div_yld > 0.04) &
         (pipe.ebit_mgn > 0.0) & 
-        (data.history(pipe.index, 'price', 3, '1d').mean() > data.history(pipe.index, 'price', 7, '1d').mean())].sort_values(by='mkt_cap', ascending=False).iloc[:int(NUM_LONG*2.5)]
+        (pipe.roe > 0) &
+        (pipe.debtToEquity < 2) &
+        (pipe.net_debt < 4000000000) &
+        (pipe.mkt_cap > 4000000000) &
+        (pipe.pb_ratio < 8) &
+        (pipe.pcf_ratio < 175) &
+        (pipe.pe < 50) &
+        (pipe.roe > 0)].sort_values(by='div_yld', ascending=False).iloc[:int(NUM_LONG*2.5)]
+        #(data.history(pipe.index, 'price', 18, '1d').mean() < data.history(pipe.index, 'price', 7, '1d').mean()) &
+        #(pipe.mkt_cap > 4000000000)].sort_values(by='div_yld', ascending=False).iloc[:int(NUM_LONG*2.5)]
     context.long_bucket = []
     if len(long_candidates) > 0:
         context.long_bucket = get_bucket(long_candidates.sort_values(by='debtToEquity', ascending=True).index[:NUM_LONG], data)
@@ -181,12 +192,12 @@ def before_trading_start(context, data):
         (pipe.mkt_cap < 15000000000) &
         (pipe.mkt_cap > 100000000) &
         (pipe.close > 15) &
-        (pipe.debtToEquity > 0.5) &
-        (data.current(pipe.index, 'price') < data.history(pipe.index, 'price', 5, '1d').mean()) &
-        (pipe.roe < 0)].sort_values(by='pe', ascending=False).iloc[:int(NUM_SHORT*2.5)]
-    context.short_bucket = []
-    if len(short_candidates) > 0:
-        context.short_bucket = get_bucket(short_candidates.sort_values(by='revenue_growth', ascending=True).index[:NUM_SHORT], data)
+        (pipe.debtToEquity > 1) &
+        #(pipe.gross_margin < 0.9) &
+        (pipe.pb_ratio > 6) &
+        (pipe.pcf_ratio > 20)].sort_values(by='debtToEquity', ascending=False).iloc[:int(NUM_SHORT*2.5)]
+        #(pipe.roe < 0)].sort_values(by='pe', ascending=False).iloc[:int(NUM_SHORT*2.5)]
+    context.short_bucket = get_bucket(short_candidates.sort_values(by='gross_profit', ascending=True).index[:NUM_SHORT], data)
 
 def get_bucket(symbols, data):
     prices = data.history(symbols, 'price', 300, '1d')
@@ -213,16 +224,12 @@ def execute_orders(context,data):
     if len(context.long_bucket) > 0:
         for stock, weight in context.long_bucket.iteritems():
             if data.can_trade(stock) and not np.isnan(weight):
-                order_target_percent(stock, longLeverage * np.min([weight,MAX_STOCK_PCT]))
+                order_target_percent(stock, longLeverage * weight)
     
     # Sell shorts
-    if len(context.short_bucket) > 0:
-        for stock, weight in context.short_bucket.iteritems():
-            if data.can_trade(stock) and not np.isnan(weight):
-                order_target_percent(stock, shortLeverage * np.max([weight,MAX_STOCK_PCT]))
-    
-    if len(context.short_bucket) == 0:
-        order_target(sid(5061), -10)
+    for stock, weight in context.short_bucket.iteritems():
+        if data.can_trade(stock):
+            order_target_percent(stock, shortLeverage * weight)
 
 def momentumFavorable(data):
     spy = symbol('SPY')
