@@ -3,30 +3,15 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
 TODO
-- research
-    - build list of metrics for all Q1500 - 
-        - Cache month n
-        - record stats on month n+1 for top & bottom 5% ROI
-        - plot min/max/avg/diff % for key metrics over time
-        - revise screen criteria accordingly
-        - do this programmatically month by month (possibly in next version)
-- reduce drawdown
-    - tune screen criteria
-        - look for top offenders and screen out with fundamental metrics
-        - consider adding momemtum to the screen
-- tune leverage
-    - vary per pullout indicators
-- Check for unempl daily by watching for change in index (date posted)
-- test pullout on jobs created, not unemployment rate
-- refine screens
-    1. Use "Factor Ranking & Analysis" to identify good long and short factors
-    2. Get cross-sectional correlations of factors - see page 12 of ic research pdf and note at bottom of Factor "IC Analysis v1" notebook.  Use this to get optimal weights of factors
-        - maybe do this in the alg semi-monthly automatically?
-    3. SmartScore using the identified factors and optimal weights.  Do this separately for long and short buckets.
-    4. Experiment to determine best leverage for long/short buckets during bear/bull markets
-- consider factor IC decay - schedule times to re-assess factors (document in a notebook); 
-- Do factor analysis/calculate long/short buckets separately per industry
-
+- try to re-implement some kind of stop-loss screen based on portfolio performance
+- change momentum screen
+    - get rid of sma screen - it screens out too much and kills rtns
+    - schedule an hourly check - find holdings where difference between intraday high and current price is too high, and sell to stop loss
+- make stop-loss filter more restrictive (?)
+- test reduce max_stock_pct
+- test remove sector filters
+- test remove symbol filters
+- do more analysis to find best values for screen factors
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
 from quantopian.pipeline import Pipeline, CustomFactor
@@ -41,10 +26,11 @@ import scipy
 
 # Globals
 LoggingEnabled = True
-UTILITIES_SECTOR = 207
-REALESTATE_SECTOR = 104
 NUM_LONG = 12
 NUM_SHORT = 12
+MAX_STOCK_PCT = 0.12
+MAX_DAILY_LOSS_PCT = 0.02
+MAX_TOTAL_LOSS_PCT = -0.05
 
 class UnemplData(object):
     def __init__(self, pastData):
@@ -86,6 +72,17 @@ def initialize(context):
                       date_rules.every_day(),
                       time_rules.market_open(minutes=5))
     
+    # Intraday stop loss
+    total_minutes = 6*60 + 30
+    for i in range(30, total_minutes):
+        if i % 30 == 0:
+            schedule_function(
+                stop_loss,
+                date_rules.every_day(),
+                time_rules.market_open(minutes=i),
+                True
+            )
+    
     # Set up pipeline
     pipe = Pipeline()  
     attach_pipeline(pipe, name='pipe')
@@ -94,15 +91,8 @@ def initialize(context):
 def build_pipeline(pipe):
     universe_filter = Q1500US()
     
-    # Screen for no utilities and minimum volume
-    sector_code = morningstar.asset_classification.morningstar_sector_code.latest
-    util_sector_filter = (sector_code != UTILITIES_SECTOR)
-    re_sector_filter = (sector_code != REALESTATE_SECTOR)
-    
-    symbol_filter = ~(morningstar.share_class_reference.symbol.latest.matches('TPC')) & ~(morningstar.share_class_reference.symbol.latest.matches('NFLX'))
-    
     div_yld = morningstar.valuation_ratios.dividend_yield.latest
-    high_div_filter = (div_yld > .04)
+    high_div_filter = (div_yld > .03)
     no_div_filter = ~(div_yld > 0.0)
     
     # Factors
@@ -116,40 +106,18 @@ def build_pipeline(pipe):
     pipe.add(debtToEquity, 'debtToEquity')
     roe = morningstar.operation_ratios.roe.latest
     pipe.add(roe, 'roe')
-    pe = morningstar.valuation_ratios.pe_ratio.latest
-    pipe.add(pe, 'pe')
     close = USEquityPricing.close.latest
     pipe.add(close, 'close')
-    revenue_growth = morningstar.operation_ratios.revenue_growth.latest
-    pipe.add(revenue_growth, 'revenue_growth')
     gross_margin = morningstar.operation_ratios.gross_margin.latest
     pipe.add(gross_margin, 'gross_margin')
     net_debt = morningstar.balance_sheet.net_debt.latest
     pipe.add(net_debt, 'net_debt')
-    cf_yield = morningstar.valuation_ratios.cf_yield.latest
-    pipe.add(cf_yield, 'cf_yield')
-    total_assets = morningstar.balance_sheet.total_assets.latest
-    pipe.add(total_assets, 'total_assets')
-    pcf_ratio = morningstar.valuation_ratios.pcf_ratio.latest
-    pipe.add(pcf_ratio, 'pcf_ratio')
-    pb_ratio = morningstar.valuation_ratios.pb_ratio.latest
-    pipe.add(pb_ratio, 'pb_ratio')
-    total_debt = morningstar.balance_sheet.total_debt.latest
-    pipe.add(total_debt, 'total_debt')
-    cash_rtn = morningstar.valuation_ratios.cash_return.latest
-    pipe.add(cash_rtn, 'cash_rtn')
     gross_profit = morningstar.income_statement.gross_profit.latest
     pipe.add(gross_profit, 'gross_profit')
-    book_val_yld = morningstar.valuation_ratios.book_value_yield.latest
-    pipe.add(book_val_yld, 'book_val_yld')
-    pipe.add(sector_code,'sector_code')
     symbol = morningstar.share_class_reference.symbol.latest
     pipe.add(symbol,'symbol')
     
     pipe.set_screen(universe_filter &
-                    util_sector_filter &
-                    re_sector_filter &
-                    symbol_filter &
                     (high_div_filter | no_div_filter))
     
     return pipe
@@ -171,33 +139,25 @@ def before_trading_start(context, data):
     # Rebalance
     context.long_bucket = pd.Series([])
     long_candidates = pipe[
-        (pipe.div_yld > 0.04) &
-        (pipe.ebit_mgn > 0.0) & 
-        (pipe.roe > 0) &
-        (pipe.debtToEquity < 2) &
-        (pipe.net_debt < 4000000000) &
-        (pipe.mkt_cap > 4000000000) &
-        (pipe.pb_ratio < 8) &
-        (pipe.pcf_ratio < 175) &
-        (pipe.pe < 50) &
-        (pipe.roe > 0)].sort_values(by='div_yld', ascending=False).iloc[:int(NUM_LONG*2.5)]
-        #(data.history(pipe.index, 'price', 18, '1d').mean() < data.history(pipe.index, 'price', 7, '1d').mean()) &
-        #(pipe.mkt_cap > 4000000000)].sort_values(by='div_yld', ascending=False).iloc[:int(NUM_LONG*2.5)]
-    context.long_bucket = []
+        (pipe.div_yld > 0.03) &
+        (pipe.ebit_mgn > -1.0) & 
+        (pipe.roe > -0.3) &
+        (pipe.debtToEquity < 7) &
+        (pipe.net_debt < 6000000000) &
+        (pipe.mkt_cap > 2000000000) &
+        (data.current(pipe.index, 'price') > data.history(pipe.index, 'price', 30, '1d').mean()) &
+        (pipe.roe > -0.35)].sort_values(by='div_yld', ascending=False).iloc[:int(NUM_LONG*2.5)]
     if len(long_candidates) > 0:
-        context.long_bucket = get_bucket(long_candidates.sort_values(by='debtToEquity', ascending=True).index[:NUM_LONG], data)
+        context.long_bucket = get_bucket(long_candidates.sort_values(by='debtToEquity', ascending=True).index[:NUM_LONG*1.5], data).sort_values(ascending=False)
     
     short_candidates = pipe[
         ~(pipe.div_yld > 0.0) &
-        (pipe.mkt_cap < 15000000000) &
+        (pipe.mkt_cap < 50000000000) &
         (pipe.mkt_cap > 100000000) &
         (pipe.close > 15) &
-        (pipe.debtToEquity > 1) &
-        #(pipe.gross_margin < 0.9) &
-        (pipe.pb_ratio > 6) &
-        (pipe.pcf_ratio > 20)].sort_values(by='debtToEquity', ascending=False).iloc[:int(NUM_SHORT*2.5)]
-        #(pipe.roe < 0)].sort_values(by='pe', ascending=False).iloc[:int(NUM_SHORT*2.5)]
-    context.short_bucket = get_bucket(short_candidates.sort_values(by='gross_profit', ascending=True).index[:NUM_SHORT], data)
+        (data.current(pipe.index, 'price') < data.history(pipe.index, 'price', 30, '1d').mean()) &
+        (pipe.debtToEquity > 0.7)].sort_values(by='debtToEquity', ascending=False).iloc[:int(NUM_SHORT*2.5)]
+    context.short_bucket = get_bucket(short_candidates.sort_values(by='gross_profit', ascending=True).index[:NUM_SHORT*1.5], data).sort_values(ascending=False)
 
 def get_bucket(symbols, data):
     prices = data.history(symbols, 'price', 300, '1d')
@@ -214,29 +174,46 @@ def execute_orders(context,data):
                 order_target(stock, 0)
     
     # Calculate long/short leverage
-    longLeverage = 1.2
-    shortLeverage = -0.8
+    longLeverage = 1.6
+    shortLeverage = -1.1
     if not context.favorable:
         longLeverage = 0.3
         shortLeverage = -0.3
     
-    # Buy longs
-    if len(context.long_bucket) > 0:
-        for stock, weight in context.long_bucket.iteritems():
-            if data.can_trade(stock) and not np.isnan(weight):
-                order_target_percent(stock, longLeverage * weight)
-    
-    # Sell shorts
-    for stock, weight in context.short_bucket.iteritems():
-        if data.can_trade(stock):
-            order_target_percent(stock, shortLeverage * weight)
+    # Place orders
+    try:
+        placeOrders(context.long_bucket, longLeverage, NUM_LONG, data)
+    except TypeError:
+        pass
+    placeOrders(context.short_bucket, shortLeverage, NUM_SHORT, data)
+
+def placeOrders(bucket, leverage, maxNumStocks, data):
+    numStocks = 0
+    if len(bucket) > 0:
+        for stock, weight in bucket.iteritems():
+            if data.can_trade(stock):
+                if not np.isnan(weight) and \
+                    numStocks < maxNumStocks:
+                        numStocks += 1
+                        order_target_percent(stock, leverage * np.min([weight,MAX_STOCK_PCT])) 
+                else:
+                    order_target_percent(stock, 0)
 
 def momentumFavorable(data):
     spy = symbol('SPY')
     mavgShort = data.history(spy, 'price', 50, '1d').mean()
     mavgLong = data.history(spy, 'price', 200, '1d').mean()
     return mavgShort > mavgLong
-            
+
+def stop_loss(context, data):
+    for stock, pos in context.portfolio.positions.iteritems():
+        if pos.amount > 0 and (data.current(stock, 'price') / pos.cost_basis) - 1 < MAX_TOTAL_LOSS_PCT:
+            context.long_bucket[stock] = float('nan')
+            order_target_percent(stock, 0)
+        elif pos.amount < 0 and (data.current(stock, 'price') / pos.cost_basis) - 1 > (-1*MAX_TOTAL_LOSS_PCT):
+            context.short_bucket[stock] = float('nan')
+            order_target_percent(stock, 0)
+
 def record_vars(context, data):
     if not LoggingEnabled:
         return
@@ -313,7 +290,7 @@ def build_past_data():
         6.6,6.7,6.7,6.2,6.3,6.1,6.2,6.2,5.9,5.7,5.8,5.6,
         5.7,5.5,5.4,5.4,5.5,5.3,5.2,5.1,5,5,5,5,
         4.9,4.9,5,5,4.7,4.9,4.9,4.9,4.9,4.8,4.6,4.7,
-        4.8,4.7,4.5]
+        4.8,4.7,4.5,4.4,4.3]
     
     # Strip future values
     now = get_datetime()
