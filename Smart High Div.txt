@@ -3,29 +3,13 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
 TODO
-- research
-    - build list of metrics for all Q1500 - 
-        - Cache month n
-        - record stats on month n+1 for top & bottom 5% ROI
-        - plot min/max/avg/diff % for key metrics over time
-        - revise screen criteria accordingly
-        - do this programmatically month by month (possibly in next version)
-- reduce drawdown
-    - tune screen criteria
-        - look for top offenders and screen out with fundamental metrics
-        - consider adding momemtum to the screen
-- tune leverage
-    - vary per pullout indicators
-- Check for unempl daily by watching for change in index (date posted)
-- test pullout on jobs created, not unemployment rate
-- refine screens
-    1. Use "Factor Ranking & Analysis" to identify good long and short factors
-    2. Get cross-sectional correlations of factors - see page 12 of ic research pdf and note at bottom of Factor "IC Analysis v1" notebook.  Use this to get optimal weights of factors
-        - maybe do this in the alg semi-monthly automatically?
-    3. SmartScore using the identified factors and optimal weights.  Do this separately for long and short buckets.
-    4. Experiment to determine best leverage for long/short buckets during bear/bull markets
-- consider factor IC decay - schedule times to re-assess factors (document in a notebook); 
-- Do factor analysis/calculate long/short buckets separately per industry
+- Try to remove bad filters
+- fix beta and short count (ok to focus on short term to get into context by july)
+- enter into contest for july
+- reduce drawdown further
+- add screen for low earnings surprise
+- try to predict earnings announcements and don't hold when close to one (maybe if yesterday's total debt <> total debt from 80 days ago)
+
 
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
@@ -43,6 +27,7 @@ import scipy
 LoggingEnabled = True
 UTILITIES_SECTOR = 207
 REALESTATE_SECTOR = 104
+MAX_LOSS = -0.045
 NUM_LONG = 12
 NUM_SHORT = 12
 
@@ -69,6 +54,8 @@ def initialize(context):
     # Initialize context variables
     context.long_bucket = pd.Series([])
     context.short_bucket = pd.Series([])
+    context.flagged_longs = set([])
+    context.flagged_shorts = set([])
     context.rebalanceDue = True
     context.favorable = True
     context.unemplData = UnemplData(build_past_data())
@@ -181,23 +168,19 @@ def before_trading_start(context, data):
         (pipe.pcf_ratio < 175) &
         (pipe.pe < 50) &
         (pipe.roe > 0)].sort_values(by='div_yld', ascending=False).iloc[:int(NUM_LONG*2.5)]
-        #(data.history(pipe.index, 'price', 18, '1d').mean() < data.history(pipe.index, 'price', 7, '1d').mean()) &
-        #(pipe.mkt_cap > 4000000000)].sort_values(by='div_yld', ascending=False).iloc[:int(NUM_LONG*2.5)]
     context.long_bucket = []
     if len(long_candidates) > 0:
-        context.long_bucket = get_bucket(long_candidates.sort_values(by='debtToEquity', ascending=True).index[:NUM_LONG], data)
+        context.long_bucket = get_bucket(long_candidates.sort_values(by='debtToEquity', ascending=True).index[:NUM_LONG*1.5], data)
     
     short_candidates = pipe[
         ~(pipe.div_yld > 0.0) &
         (pipe.mkt_cap < 15000000000) &
         (pipe.mkt_cap > 100000000) &
-        (pipe.close > 15) &
+        (pipe.pcf_ratio > 20) &
         (pipe.debtToEquity > 1) &
-        #(pipe.gross_margin < 0.9) &
         (pipe.pb_ratio > 6) &
-        (pipe.pcf_ratio > 20)].sort_values(by='debtToEquity', ascending=False).iloc[:int(NUM_SHORT*2.5)]
-        #(pipe.roe < 0)].sort_values(by='pe', ascending=False).iloc[:int(NUM_SHORT*2.5)]
-    context.short_bucket = get_bucket(short_candidates.sort_values(by='gross_profit', ascending=True).index[:NUM_SHORT], data)
+        (pipe.close > 15)].sort_values(by='debtToEquity', ascending=False).iloc[:int(NUM_SHORT*2.5)]
+    context.short_bucket = get_bucket(short_candidates.sort_values(by='gross_profit', ascending=True).index[:NUM_SHORT*1.5], data)
 
 def get_bucket(symbols, data):
     prices = data.history(symbols, 'price', 300, '1d')
@@ -205,12 +188,44 @@ def get_bucket(symbols, data):
     weights = get_reduced_correlation_weights(daily_R[symbols])
     return weights
 
+def drawdown(pos, price, high, low):
+    basis = high
+    if pos.amount < 0:
+        basis = -1 * low
+    theGain = (price/basis)-1
+    return theGain
+
 def execute_orders(context,data):
-    # Cover stocks no longer in lists
+    # Flag stocks with high losses
+    for stock, pos in context.portfolio.positions.iteritems():
+        theDD = drawdown(pos, data.current(stock, 'price'), data.history(stock, 'high', 1, '1m')[0], data.history(stock, 'low', 1, '1m')[0])
+        if theDD < MAX_LOSS:
+            if pos.amount > 0:
+                context.flagged_longs.add(stock)
+            else:
+                context.flagged_shorts.add(stock)
+    
+    # Unflag recovered stocks
+    recovered = []
+    for stock in context.flagged_longs:
+        if data.current(stock, 'price') > data.history(stock, 'price', 3, '1d').mean() and data.current(stock, 'price') > data.history(stock, 'price', 30, '1d').mean():
+            recovered.append(stock)
+    for stock in recovered:
+        context.flagged_longs.discard(stock)
+    recovered = []
+    for stock in context.flagged_shorts:
+        if data.current(stock, 'price') < data.history(stock, 'price', 3, '1d').mean() and data.current(stock, 'price') < data.history(stock, 'price', 30, '1d').mean():
+            recovered = []
+    for stock in recovered:
+        context.flagged_shorts.discard(stock)
+    
+    # Cover stocks no longer in lists or flagged
     for stock in context.portfolio.positions.iterkeys():  
-        if stock not in context.long_bucket and \
-            stock not in context.short_bucket and \
-            data.can_trade(stock):
+        if data.can_trade(stock) and \
+            (stock not in context.long_bucket and \
+            stock not in context.short_bucket) or \
+            stock in context.flagged_longs or \
+            stock in context.flagged_shorts:
                 order_target(stock, 0)
     
     # Calculate long/short leverage
@@ -221,22 +236,37 @@ def execute_orders(context,data):
         shortLeverage = -0.3
     
     # Buy longs
+    numStocks = 0
     if len(context.long_bucket) > 0:
         for stock, weight in context.long_bucket.iteritems():
-            if data.can_trade(stock) and not np.isnan(weight):
-                order_target_percent(stock, longLeverage * weight)
+            if data.can_trade(stock):
+                if not np.isnan(weight) and \
+                    stock not in context.flagged_longs and \
+                    numStocks < NUM_LONG:
+                        order_target_percent(stock, longLeverage * weight)
+                        numStocks += 1
+                else:
+                    order_target_percent(stock, 0)
     
     # Sell shorts
+    numStocks = 0
     for stock, weight in context.short_bucket.iteritems():
         if data.can_trade(stock):
-            order_target_percent(stock, shortLeverage * weight)
+            if stock not in context.flagged_shorts and \
+                numStocks < NUM_SHORT:
+                    order_target_percent(stock, shortLeverage * weight)
+                    numStocks += 1
+            else:
+                order_target_percent(stock, 0)
 
 def momentumFavorable(data):
     spy = symbol('SPY')
     mavgShort = data.history(spy, 'price', 50, '1d').mean()
     mavgLong = data.history(spy, 'price', 200, '1d').mean()
     return mavgShort > mavgLong
-            
+
+
+
 def record_vars(context, data):
     if not LoggingEnabled:
         return
