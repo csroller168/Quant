@@ -5,6 +5,7 @@ Use is unauthorized without written permission
 TODO
 - test remove bad screens (utils, blacklist)
 - reduce drawdown
+    - create scrub list to cap drawdown
 - reduce recent beta
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
@@ -74,13 +75,6 @@ def initialize(context):
 def build_pipeline(pipe):
     universe_filter = Q1500US()
     
-    # Screen for no utilities and minimum volume
-    sector_code = morningstar.asset_classification.morningstar_sector_code.latest
-    util_sector_filter = (sector_code != UTILITIES_SECTOR)
-    re_sector_filter = (sector_code != REALESTATE_SECTOR)
-    
-    symbol_filter = ~(morningstar.share_class_reference.symbol.latest.matches('TPC')) & ~(morningstar.share_class_reference.symbol.latest.matches('NFLX'))
-    
     div_yld = morningstar.valuation_ratios.dividend_yield.latest
     high_div_filter = (div_yld > .03)
     no_div_filter = ~(div_yld > 0.0)
@@ -122,14 +116,10 @@ def build_pipeline(pipe):
     pipe.add(gross_profit, 'gross_profit')
     book_val_yld = morningstar.valuation_ratios.book_value_yield.latest
     pipe.add(book_val_yld, 'book_val_yld')
-    pipe.add(sector_code,'sector_code')
     symbol = morningstar.share_class_reference.symbol.latest
     pipe.add(symbol,'symbol')
     
     pipe.set_screen(universe_filter &
-                    util_sector_filter &
-                    re_sector_filter &
-                    symbol_filter &
                     (high_div_filter | no_div_filter))
     
     return pipe
