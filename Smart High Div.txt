@@ -3,11 +3,9 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
 TODO
+- test remove bad screens (utils, blacklist)
 - reduce drawdown
     - create scrub list to cap drawdown
-    - PDLI - short 12-03 - 09-07
-    - DRE - 12-03 - 12/07
-- fix no shorts and balance numStocks (larger num sorted by weight desc & capped)
 - reduce recent beta
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
@@ -20,7 +18,6 @@ from scipy.stats import rankdata
 import numpy as np
 import pandas as pd
 import scipy
-import talib
 
 # Globals
 LoggingEnabled = True
@@ -175,29 +172,6 @@ def get_bucket(symbols, data):
     weights = get_reduced_correlation_weights(daily_R[symbols])
     return weights
 
-def talibData(stock, data):
-    highs = data.history(stock, 'high', 100, '1d')
-    lows = data.history(stock, 'low', 100, '1d')
-    closes = data.history(stock, 'price', 100, '1d')
-    adx = talib.ADX(highs, lows, closes)[-1]
-    plusdi = talib.PLUS_DI(highs, lows, closes)[-1]
-    minusdi = talib.MINUS_DI(highs, lows, closes)[-1]
-    return [adx, plusdi, minusdi]
-
-def bullish(stock, data):
-    [adx, plusdi, minusdi] = talibData(stock, data)
-    if adx > 25 and plusdi > minusdi:
-        return True
-    else:
-        return False
-
-def bearish(stock, data):
-    [adx, plusdi, minusdi] = talibData(stock, data)
-    if adx > 25 and minusdi > plusdi:
-        return True
-    else:
-        return False
-
 def execute_orders(context,data):
     # Cover stocks no longer in lists
     for stock in context.portfolio.positions.iterkeys():  
@@ -216,12 +190,12 @@ def execute_orders(context,data):
     # Buy longs
     if len(context.long_bucket) > 0:
         for stock, weight in context.long_bucket.iteritems():
-            if data.can_trade(stock) and not np.isnan(weight) and bullish(stock, data):
+            if data.can_trade(stock) and not np.isnan(weight):
                 order_target_percent(stock, longLeverage * np.min([weight,MAX_STOCK_PCT]))
     
     # Sell shorts
     for stock, weight in context.short_bucket.iteritems():
-        if data.can_trade(stock) and bearish(stock, data):
+        if data.can_trade(stock):
             order_target_percent(stock, shortLeverage * np.min([weight,MAX_STOCK_PCT]))
 
 def momentumFavorable(data):
