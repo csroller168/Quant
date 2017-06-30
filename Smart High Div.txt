@@ -3,10 +3,13 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
 TODO
-- test remove bad screens (utils, blacklist)
-- reduce drawdown
-    - create scrub list to cap drawdown
-- reduce recent beta
+- fix beta
+- further reduce drawdown
+    - try screen against avg. earnings surprises
+    - look at histogram of recent volumes for spikes
+    - try to predict earnings announcements
+        - gross debt from 80 days ago != today's
+        - pattern in volume spikes
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
 from quantopian.pipeline import Pipeline, CustomFactor
@@ -21,11 +24,9 @@ import scipy
 
 # Globals
 LoggingEnabled = True
-UTILITIES_SECTOR = 207
-REALESTATE_SECTOR = 104
-NUM_LONG = 12
-NUM_SHORT = 12
-MAX_STOCK_PCT = 0.2
+NUM_LONG = 14
+NUM_SHORT = 14
+MAX_STOCK_PCT = 1.5/NUM_LONG
 
 class UnemplData(object):
     def __init__(self, pastData):
@@ -74,7 +75,6 @@ def initialize(context):
     
 def build_pipeline(pipe):
     universe_filter = Q1500US()
-    
     div_yld = morningstar.valuation_ratios.dividend_yield.latest
     high_div_filter = (div_yld > .03)
     no_div_filter = ~(div_yld > 0.0)
@@ -148,22 +148,24 @@ def before_trading_start(context, data):
         (pipe.net_debt < 6000000000) &
         (pipe.mkt_cap > 2000000000) &
         #(pipe.pb_ratio < 18) &
-        #(pipe.pcf_ratio < 500) &
+        (pipe.pcf_ratio < 50) &
         #(pipe.pe < 50) &
+        (data.history(pipe.index, 'price', 50, '1d').mean() > data.history(pipe.index, 'price', 200, '1d').mean()) &
         (pipe.roe > -0.35)].sort_values(by='div_yld', ascending=False).iloc[:int(NUM_LONG*2.5)]
-    context.long_bucket = []
+    context.long_bucket = pd.Series([])
     if len(long_candidates) > 0:
         context.long_bucket = get_bucket(long_candidates.sort_values(by='debtToEquity', ascending=True).index[:NUM_LONG], data)
     
     short_candidates = pipe[
         ~(pipe.div_yld > 0.0) &
         (pipe.mkt_cap < 50000000000) &
-        (pipe.mkt_cap > 100000000) &
+        #(pipe.mkt_cap > 100000000) &
         (pipe.close > 15) &
-        (pipe.debtToEquity > 0.7) &
+        #(pipe.debtToEquity > 0.7) &
         #(pipe.gross_margin < 0.9) &
         #(pipe.pb_ratio > 4) &
-        (pipe.pcf_ratio > 20)].sort_values(by='debtToEquity', ascending=False).iloc[:int(NUM_SHORT*2.5)]
+        (pipe.pcf_ratio > 20) &
+        (data.history(pipe.index, 'price', 50, '1d').mean() < data.history(pipe.index, 'price', 200, '1d').mean())].sort_values(by='debtToEquity', ascending=False).iloc[:int(NUM_SHORT*2.5)]
     context.short_bucket = get_bucket(short_candidates.sort_values(by='gross_profit', ascending=True).index[:NUM_SHORT], data)
 
 def get_bucket(symbols, data):
