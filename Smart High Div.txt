@@ -9,6 +9,7 @@ TODO
     - try to predict earnings announcements
         - gross debt from 80 days ago != today's
         - pattern in volume spikes
+- consider reduce beta by dynamically adjusting long/short weights
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
 from quantopian.pipeline import Pipeline, CustomFactor
@@ -23,8 +24,8 @@ import scipy
 
 # Globals
 LoggingEnabled = True
-NUM_LONG = 16
-NUM_SHORT = 16
+NUM_LONG = 12
+NUM_SHORT = 12
 MAX_STOCK_PCT = 1.5/NUM_LONG
 
 class UnemplData(object):
