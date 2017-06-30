@@ -3,7 +3,6 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
 TODO
-- fix beta
 - further reduce drawdown
     - try screen against avg. earnings surprises
     - look at histogram of recent volumes for spikes
@@ -24,8 +23,8 @@ import scipy
 
 # Globals
 LoggingEnabled = True
-NUM_LONG = 14
-NUM_SHORT = 14
+NUM_LONG = 16
+NUM_SHORT = 16
 MAX_STOCK_PCT = 1.5/NUM_LONG
 
 class UnemplData(object):
@@ -183,8 +182,8 @@ def execute_orders(context,data):
                 order_target(stock, 0)
     
     # Calculate long/short leverage
-    longLeverage = 1.2
-    shortLeverage = -0.8
+    longLeverage = 1.35
+    shortLeverage = -0.65
     if not context.favorable:
         longLeverage = 0.3
         shortLeverage = -0.3
