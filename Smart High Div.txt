@@ -3,8 +3,7 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
 TODO
-- consider reduce beta by dynamically adjusting long/short weights
-- consider reduce beta by pairs trading
+- NEXT ALG:  consider reduce beta by pairs trading
     - pick longs from long bucket
     - for each long, pick from the short bucket something that neutralizes beta
 - further reduce drawdown
@@ -30,7 +29,6 @@ LoggingEnabled = True
 NUM_LONG = 12
 NUM_SHORT = 12
 MAX_STOCK_PCT = 1.2/NUM_LONG
-BETA_VAR = 0.1
 
 class UnemplData(object):
     def __init__(self, pastData):
@@ -153,9 +151,7 @@ def before_trading_start(context, data):
         (pipe.debtToEquity < 7) &
         (pipe.net_debt < 6000000000) &
         (pipe.mkt_cap > 2000000000) &
-        #(pipe.pb_ratio < 18) &
         (pipe.pcf_ratio < 50) &
-        #(pipe.pe < 50) &
         (data.history(pipe.index, 'price', 50, '1d').mean() > data.history(pipe.index, 'price', 200, '1d').mean()) &
         (pipe.roe > -0.35)].sort_values(by='div_yld', ascending=False).iloc[:int(NUM_LONG*2.5)]
     context.long_bucket = pd.Series([])
@@ -165,11 +161,7 @@ def before_trading_start(context, data):
     short_candidates = pipe[
         ~(pipe.div_yld > 0.0) &
         (pipe.mkt_cap < 50000000000) &
-        #(pipe.mkt_cap > 100000000) &
         (pipe.close > 15) &
-        #(pipe.debtToEquity > 0.7) &
-        #(pipe.gross_margin < 0.9) &
-        #(pipe.pb_ratio > 4) &
         (pipe.pcf_ratio > 20) &
         (data.history(pipe.index, 'price', 50, '1d').mean() < data.history(pipe.index, 'price', 200, '1d').mean())].sort_values(by='debtToEquity', ascending=False).iloc[:int(NUM_SHORT*2.5)]
     context.short_bucket = get_bucket(short_candidates.sort_values(by='gross_profit', ascending=True).index[:NUM_SHORT], data)
@@ -189,7 +181,7 @@ def execute_orders(context,data):
                 order_target(stock, 0)
     
     # Calculate long/short leverage
-    (longLeverage, shortLeverage) = getLeverage(context, data)
+    (longLeverage, shortLeverage) = (0.58, -0.29)
     if not context.favorable:
         longLeverage = 0.3
         shortLeverage = -0.3
@@ -204,17 +196,6 @@ def execute_orders(context,data):
     for stock, weight in context.short_bucket.iteritems():
         if data.can_trade(stock):
             order_target_percent(stock, shortLeverage * np.min([weight,MAX_STOCK_PCT]))
-
-def getLeverage(context, data):
-    context.portfolioCloses = np.append(context.portfolioCloses, context.portfolio.portfolio_value)
-    context.benchmarkCloses = np.append(context.benchmarkCloses, data.current(sid(8554), 'price'))
-    beta = estimateBeta(context.portfolioCloses, context.benchmarkCloses)
-    if beta > BETA_VAR:
-        return (0.65, -0.25)
-    elif beta < (-1) * BETA_VAR:
-        return (0.8, -0.12)
-    else:
-        return (0.7, -0.2)
 
 def momentumFavorable(data):
     spy = symbol('SPY')
@@ -306,21 +287,3 @@ def build_past_data():
     unempl_list = unempl_list[:monthOffset]
     
     return unempl_list
-
-def estimateBeta(priceY,priceX):  
-    algorithm_returns = (priceY / np.roll(priceY,1))[1:31]
-    benchmark_returns = (priceX / np.roll(priceX,1))[1:31]  
-    if len(algorithm_returns) <> len(benchmark_returns):  
-        minlen = min(len(algorithm_returns), len(benchmark_returns))  
-        if minlen > 2:  
-            algorithm_returns = algorithm_returns[-minlen:]  
-            benchmark_returns = benchmark_returns[-minlen:]  
-        else:  
-            return 1.00  
-    returns_matrix = np.vstack([algorithm_returns, benchmark_returns])  
-    C = np.cov(returns_matrix, ddof=1)  
-    algorithm_covariance = C[0][1]  
-    benchmark_variance = C[1][1]  
-    beta = algorithm_covariance / benchmark_variance
-
-    return beta
