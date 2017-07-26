@@ -6,6 +6,7 @@ TODO
 - NEXT ALG:  consider reduce beta by pairs trading
     - pick longs from long bucket
     - for each long, pick from the short bucket something that neutralizes beta
+    - *** OR *** pairs trade within long and short buckets to have more flexibility on leverage - too much short suppresses returns
 - further reduce drawdown
     - try screen against avg. earnings surprises
     - look at histogram of recent volumes for spikes
