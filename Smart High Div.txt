@@ -1,0 +1,290 @@
+"""
+Copyright Chris Short 2017
+Use is unauthorized without written permission
+
+TODO
+- NEXT ALG:  consider reduce beta by pairs trading
+    - pick longs from long bucket
+    - for each long, pick from the short bucket something that neutralizes beta
+    - *** OR *** pairs trade within long and short buckets to have more flexibility on leverage - too much short suppresses returns
+- further reduce drawdown
+    - try screen against avg. earnings surprises
+    - look at histogram of recent volumes for spikes
+    - try to predict earnings announcements
+        - gross debt from 80 days ago != today's
+        - pattern in volume spikes
+"""
+from quantopian.algorithm import attach_pipeline, pipeline_output
+from quantopian.pipeline import Pipeline, CustomFactor
+from quantopian.pipeline.data import morningstar
+from quantopian.pipeline.data.quandl import fred_unrate
+from quantopian.pipeline.filters.morningstar import Q1500US
+from quantopian.pipeline.data.builtin import USEquityPricing
+from scipy.stats import rankdata
+import numpy as np
+import pandas as pd
+import scipy
+
+# Globals
+LoggingEnabled = True
+NUM_LONG = 12
+NUM_SHORT = 12
+MAX_STOCK_PCT = 1.2/NUM_LONG
+
+class UnemplData(object):
+    def __init__(self, pastData):
+        self.pastData = pastData
+    
+    def cache_latest(self, currUnempl):
+        self.pastData.append(currUnempl)
+    
+    def is_favorable(self):
+        current = self.pastData[-1]
+        pastAvg = (self.pastData[-4] + self.pastData[-3] + self.pastData[-2]) / 3
+        return current <= pastAvg
+
+class CurrUnemplFactor(CustomFactor):
+    window_length = 1
+    inputs = [fred_unrate.value]
+    
+    def compute(self, today, assets, out, unempl):
+        out[:] = unempl
+        
+def initialize(context):
+    # Initialize context variables
+    context.long_bucket = pd.Series([])
+    context.short_bucket = pd.Series([])
+    context.portfolioCloses = np.array([])
+    context.benchmarkCloses = np.array([])
+    context.rebalanceDue = True
+    context.favorable = True
+    context.unemplData = UnemplData(build_past_data())
+    
+    # Rebalance once per month
+    schedule_function(set_rebalance_due,
+                      date_rules.month_start(days_offset=3),
+                      time_rules.market_close())
+    
+    # Record tracking variables at the end of each day.
+    schedule_function(record_vars, date_rules.every_day(), time_rules.market_close())
+    
+    # Try to execute orders every day to cover unexecuted orders
+    schedule_function(execute_orders,
+                      date_rules.every_day(),
+                      time_rules.market_open(minutes=5))
+    
+    # Set up pipeline
+    pipe = Pipeline()  
+    attach_pipeline(pipe, name='pipe')
+    build_pipeline(pipe)
+    
+def build_pipeline(pipe):
+    universe_filter = Q1500US()
+    div_yld = morningstar.valuation_ratios.dividend_yield.latest
+    high_div_filter = (div_yld > .03)
+    no_div_filter = ~(div_yld > 0.0)
+    
+    # Factors
+    pipe.add(CurrUnemplFactor(), 'unempl')
+    pipe.add(div_yld, 'div_yld')
+    ebit_mgn = morningstar.operation_ratios.ebitda_margin.latest
+    pipe.add(ebit_mgn, 'ebit_mgn')
+    mkt_cap = morningstar.valuation.market_cap.latest
+    pipe.add(mkt_cap, 'mkt_cap')
+    debtToEquity = morningstar.operation_ratios.long_term_debt_equity_ratio.latest
+    pipe.add(debtToEquity, 'debtToEquity')
+    roe = morningstar.operation_ratios.roe.latest
+    pipe.add(roe, 'roe')
+    pe = morningstar.valuation_ratios.pe_ratio.latest
+    pipe.add(pe, 'pe')
+    close = USEquityPricing.close.latest
+    pipe.add(close, 'close')
+    revenue_growth = morningstar.operation_ratios.revenue_growth.latest
+    pipe.add(revenue_growth, 'revenue_growth')
+    gross_margin = morningstar.operation_ratios.gross_margin.latest
+    pipe.add(gross_margin, 'gross_margin')
+    net_debt = morningstar.balance_sheet.net_debt.latest
+    pipe.add(net_debt, 'net_debt')
+    cf_yield = morningstar.valuation_ratios.cf_yield.latest
+    pipe.add(cf_yield, 'cf_yield')
+    total_assets = morningstar.balance_sheet.total_assets.latest
+    pipe.add(total_assets, 'total_assets')
+    pcf_ratio = morningstar.valuation_ratios.pcf_ratio.latest
+    pipe.add(pcf_ratio, 'pcf_ratio')
+    pb_ratio = morningstar.valuation_ratios.pb_ratio.latest
+    pipe.add(pb_ratio, 'pb_ratio')
+    total_debt = morningstar.balance_sheet.total_debt.latest
+    pipe.add(total_debt, 'total_debt')
+    cash_rtn = morningstar.valuation_ratios.cash_return.latest
+    pipe.add(cash_rtn, 'cash_rtn')
+    gross_profit = morningstar.income_statement.gross_profit.latest
+    pipe.add(gross_profit, 'gross_profit')
+    book_val_yld = morningstar.valuation_ratios.book_value_yield.latest
+    pipe.add(book_val_yld, 'book_val_yld')
+    symbol = morningstar.share_class_reference.symbol.latest
+    pipe.add(symbol,'symbol')
+    
+    pipe.set_screen(universe_filter &
+                    (high_div_filter | no_div_filter))
+    
+    return pipe
+
+def set_rebalance_due(context, data):
+    context.rebalanceDue = True
+
+def before_trading_start(context, data):
+    if not context.rebalanceDue:
+        return
+    context.rebalanceDue = False
+    
+    pipe = pipeline_output('pipe')
+    
+    # Recalculate favorability
+    context.unemplData.cache_latest(pipe['unempl'][0])
+    context.favorable = momentumFavorable(data) or context.unemplData.is_favorable()
+    
+    # Rebalance
+    context.long_bucket = pd.Series([])
+    long_candidates = pipe[
+        (pipe.div_yld > 0.03) &
+        (pipe.ebit_mgn > -1.0) & 
+        (pipe.roe > -0.3) &
+        (pipe.debtToEquity < 7) &
+        (pipe.net_debt < 6000000000) &
+        (pipe.mkt_cap > 2000000000) &
+        (pipe.pcf_ratio < 50) &
+        (data.history(pipe.index, 'price', 50, '1d').mean() > data.history(pipe.index, 'price', 200, '1d').mean()) &
+        (pipe.roe > -0.35)].sort_values(by='div_yld', ascending=False).iloc[:int(NUM_LONG*2.5)]
+    context.long_bucket = pd.Series([])
+    if len(long_candidates) > 0:
+        context.long_bucket = get_bucket(long_candidates.sort_values(by='debtToEquity', ascending=True).index[:NUM_LONG], data)
+    
+    short_candidates = pipe[
+        ~(pipe.div_yld > 0.0) &
+        (pipe.mkt_cap < 50000000000) &
+        (pipe.close > 15) &
+        (pipe.pcf_ratio > 20) &
+        (data.history(pipe.index, 'price', 50, '1d').mean() < data.history(pipe.index, 'price', 200, '1d').mean())].sort_values(by='debtToEquity', ascending=False).iloc[:int(NUM_SHORT*2.5)]
+    context.short_bucket = get_bucket(short_candidates.sort_values(by='gross_profit', ascending=True).index[:NUM_SHORT], data)
+
+def get_bucket(symbols, data):
+    prices = data.history(symbols, 'price', 300, '1d')
+    daily_R = prices.pct_change().dropna()
+    weights = get_reduced_correlation_weights(daily_R[symbols])
+    return weights
+
+def execute_orders(context,data):
+    # Cover stocks no longer in lists
+    for stock in context.portfolio.positions.iterkeys():  
+        if stock not in context.long_bucket and \
+            stock not in context.short_bucket and \
+            data.can_trade(stock):
+                order_target(stock, 0)
+    
+    # Calculate long/short leverage
+    (longLeverage, shortLeverage) = (0.58, -0.29)
+    if not context.favorable:
+        longLeverage = 0.3
+        shortLeverage = -0.3
+    
+    # Buy longs
+    if len(context.long_bucket) > 0:
+        for stock, weight in context.long_bucket.iteritems():
+            if data.can_trade(stock) and not np.isnan(weight):
+                order_target_percent(stock, longLeverage * np.min([weight,MAX_STOCK_PCT]))
+    
+    # Sell shorts
+    for stock, weight in context.short_bucket.iteritems():
+        if data.can_trade(stock):
+            order_target_percent(stock, shortLeverage * np.min([weight,MAX_STOCK_PCT]))
+
+def momentumFavorable(data):
+    spy = symbol('SPY')
+    mavgShort = data.history(spy, 'price', 50, '1d').mean()
+    mavgLong = data.history(spy, 'price', 200, '1d').mean()
+    return mavgShort > mavgLong
+            
+def record_vars(context, data):
+    if not LoggingEnabled:
+        return
+    
+    # Plot variables at the end of each day.
+    long_count = 0
+    short_count = 0
+    leverage = context.account.leverage
+    
+    log_str = "holding: "
+    for position in context.portfolio.positions.itervalues():
+        if position.amount > 0:
+            long_count += 1
+            log_str += position.sid.symbol + ", "
+        if position.amount < 0:
+            short_count += 1
+            log_str += position.sid.symbol + "(short), "
+    
+    # Raise an alert if short_count or leverage out of contest range
+    if short_count == 0:
+        short_count = 99
+    if leverage > 1:
+        leverage = 99
+    
+    # Plot the counts
+    record(num_long=long_count, short_count=short_count, leverage=leverage)
+    log.info(log_str)
+
+def get_reduced_correlation_weights(returns, risk_adjusted=True):
+    """
+    Implementation of minimum correlation algorithm.
+    ref: http://cssanalytics.com/doc/MCA%20Paper.pdf
+    
+    :Params:
+        :returns <Pandas DataFrame>:Timeseries of asset returns
+        :risk_adjusted <boolean>: If True, asset weights are scaled
+                                  by their standard deviations
+    """
+    correlations = returns.corr()
+    adj_correlations = get_adjusted_cor_matrix(correlations)
+    initial_weights = adj_correlations.T.mean()
+
+    ranks = initial_weights.rank()
+    ranks /= ranks.sum()
+
+    weights = adj_correlations.dot(ranks)
+    weights /= weights.sum()
+
+    if risk_adjusted:
+        weights = weights / returns.std()
+        weights /= weights.sum()
+    return weights
+
+def get_adjusted_cor_matrix(cor):
+    values = cor.values.flatten()
+    mu = np.mean(values)
+    sigma = np.std(values)
+    distribution = scipy.stats.norm(mu, sigma)
+    return 1 - cor.apply(lambda x: distribution.cdf(x))
+    
+def build_past_data():
+    unempl_list = [
+        5.8,5.9,5.9,6,6.1,6.3,6.2,6.1,6.1,6,5.8,5.7,
+        5.7,5.6,5.8,5.6,5.6,5.6,5.5,5.4,5.4,5.5,5.4,5.4,
+        5.3,5.4,5.2,5.2,5.1,5,5,4.9,5,5,5,4.9,
+        4.7,4.8,4.7,4.7,4.6,4.6,4.7,4.7,4.5,4.4,4.5,4.4,
+        4.6,4.5,4.4,4.5,4.4,4.6,4.7,4.6,4.7,4.7,4.7,5,
+        5,4.9,5.1,5,5.4,5.6,5.8,6.1,6.1,6.5,6.8,7.3,
+        7.8,8.3,8.7,9,9.4,9.5,9.5,9.6,9.8,10,9.9,9.9,
+        9.8,9.8,9.9,9.9,9.6,9.4,9.4,9.5,9.5,9.4,9.8,9.3,
+        9.1,9,9,9.1,9,9.1,9,9,9,8.8,8.6,8.5,
+        8.3,8.3,8.2,8.2,8.2,8.2,8.2,8.1,7.8,7.8,7.7,7.9,
+        8,7.7,7.5,7.6,7.5,7.5,7.3,7.3,7.2,7.2,6.9,6.7,
+        6.6,6.7,6.7,6.2,6.3,6.1,6.2,6.2,5.9,5.7,5.8,5.6,
+        5.7,5.5,5.4,5.4,5.5,5.3,5.2,5.1,5,5,5,5,
+        4.9,4.9,5,5,4.7,4.9,4.9,4.9,4.9,4.8,4.6,4.7,
+        4.8,4.7,4.5]
+    
+    # Strip future values
+    now = get_datetime()
+    monthOffset = ((now.year - 2003) * 12) + now.month
+    unempl_list = unempl_list[:monthOffset]
+    
+    return unempl_list
