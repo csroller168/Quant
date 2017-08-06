@@ -3,10 +3,10 @@ Copyright Chris Short 2017
 Use is unauthorized without written permission
 
 TODO
-- NEXT ALG:  consider reduce beta by pairs trading
-    - pick longs from long bucket
-    - for each long, pick from the short bucket something that neutralizes beta
-    - *** OR *** pairs trade within long and short buckets to have more flexibility on leverage - too much short suppresses returns
+- maximize returns
+    - prevent drawdown (see below)
+    - tune leverage
+    - try mean reversion alg
 - further reduce drawdown
     - try screen against avg. earnings surprises
     - look at histogram of recent volumes for spikes
@@ -16,6 +16,7 @@ TODO
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
 from quantopian.pipeline import Pipeline, CustomFactor
+from quantopian.pipeline.factors import RollingLinearRegressionOfReturns
 from quantopian.pipeline.data import morningstar
 from quantopian.pipeline.data.quandl import fred_unrate
 from quantopian.pipeline.filters.morningstar import Q1500US
@@ -29,7 +30,6 @@ import scipy
 LoggingEnabled = True
 NUM_LONG = 12
 NUM_SHORT = 12
-MAX_STOCK_PCT = 1.2/NUM_LONG
 
 class UnemplData(object):
     def __init__(self, pastData):
@@ -124,8 +124,21 @@ def build_pipeline(pipe):
     symbol = morningstar.share_class_reference.symbol.latest
     pipe.add(symbol,'symbol')
     
-    pipe.set_screen(universe_filter &
-                    (high_div_filter | no_div_filter))
+    longs = ((div_yld > 0.035) & (ebit_mgn > -1.0) & (roe > -0.3) & (debtToEquity < 7) & (net_debt < 6000000000) & (mkt_cap > 2000000000) & (pcf_ratio < 50))
+    shorts = (~(div_yld > 0.0) & (mkt_cap < 50000000000) & (close > 15) & (pcf_ratio > 20))
+    preScreen = (longs | shorts) & (universe_filter & (high_div_filter | no_div_filter))
+    
+    regression = RollingLinearRegressionOfReturns(
+        target=sid(8554),
+        returns_length = 30,
+        regression_length = 100,
+        mask=preScreen)
+    beta = regression.beta
+    pipe.add(beta, 'beta')
+    low_beta_screen = (beta > -0.5)
+    high_beta_screen = (beta < 0.5)
+    
+    pipe.set_screen(preScreen & (low_beta_screen | high_beta_screen))
     
     return pipe
 
@@ -153,25 +166,26 @@ def before_trading_start(context, data):
         (pipe.net_debt < 6000000000) &
         (pipe.mkt_cap > 2000000000) &
         (pipe.pcf_ratio < 50) &
-        (data.history(pipe.index, 'price', 50, '1d').mean() > data.history(pipe.index, 'price', 200, '1d').mean()) &
-        (pipe.roe > -0.35)].sort_values(by='div_yld', ascending=False).iloc[:int(NUM_LONG*2.5)]
+        (pipe.roe > -0.35) & 
+        (stockMomentumFavorable(pipe.index, data))].sort_values(by='div_yld', ascending=False).iloc[:int(NUM_LONG*2.5)]
     context.long_bucket = pd.Series([])
     if len(long_candidates) > 0:
-        context.long_bucket = get_bucket(long_candidates.sort_values(by='debtToEquity', ascending=True).index[:NUM_LONG], data)
+        context.long_bucket = long_candidates.sort_values(by='debtToEquity', ascending=True).index[:NUM_LONG]
     
     short_candidates = pipe[
         ~(pipe.div_yld > 0.0) &
         (pipe.mkt_cap < 50000000000) &
         (pipe.close > 15) &
-        (pipe.pcf_ratio > 20) &
-        (data.history(pipe.index, 'price', 50, '1d').mean() < data.history(pipe.index, 'price', 200, '1d').mean())].sort_values(by='debtToEquity', ascending=False).iloc[:int(NUM_SHORT*2.5)]
-    context.short_bucket = get_bucket(short_candidates.sort_values(by='gross_profit', ascending=True).index[:NUM_SHORT], data)
+        (pipe.pcf_ratio > 20) & 
+        (stockMomentumFavorable(pipe.index, data))].sort_values( by='debtToEquity', ascending=False).iloc[:int(NUM_SHORT*2.5)]
+    context.short_bucket = short_candidates.sort_values(by='gross_profit', ascending=True).index[:NUM_SHORT]
 
-def get_bucket(symbols, data):
-    prices = data.history(symbols, 'price', 300, '1d')
-    daily_R = prices.pct_change().dropna()
-    weights = get_reduced_correlation_weights(daily_R[symbols])
-    return weights
+def stockMomentumFavorable(symbol, data):
+    return data.history(symbol, 'price', 50, '1d').mean() > data.history(symbol, 'price', 200, '1d').mean()
+
+def beta(asset, benchmark_returns, data):
+    asset_returns = data.history(asset, 'price', 100, '1d')
+    return pd.rolling_cov(asset_returns, benchmark_returns, 100) / pd.rolling_var(benchmark_returns, 100)
 
 def execute_orders(context,data):
     # Cover stocks no longer in lists
@@ -189,14 +203,16 @@ def execute_orders(context,data):
     
     # Buy longs
     if len(context.long_bucket) > 0:
-        for stock, weight in context.long_bucket.iteritems():
-            if data.can_trade(stock) and not np.isnan(weight):
-                order_target_percent(stock, longLeverage * np.min([weight,MAX_STOCK_PCT]))
+        weight = longLeverage / len(context.long_bucket)
+        for stock in context.long_bucket:
+            if data.can_trade(stock):
+                order_target_percent(stock, weight)
     
     # Sell shorts
-    for stock, weight in context.short_bucket.iteritems():
+    for stock in context.short_bucket:
+        weight = shortLeverage / len(context.short_bucket)
         if data.can_trade(stock):
-            order_target_percent(stock, shortLeverage * np.min([weight,MAX_STOCK_PCT]))
+            order_target_percent(stock, weight)
 
 def momentumFavorable(data):
     spy = symbol('SPY')
@@ -231,38 +247,6 @@ def record_vars(context, data):
     # Plot the counts
     record(num_long=long_count, short_count=short_count, leverage=leverage)
     log.info(log_str)
-
-def get_reduced_correlation_weights(returns, risk_adjusted=True):
-    """
-    Implementation of minimum correlation algorithm.
-    ref: http://cssanalytics.com/doc/MCA%20Paper.pdf
-    
-    :Params:
-        :returns <Pandas DataFrame>:Timeseries of asset returns
-        :risk_adjusted <boolean>: If True, asset weights are scaled
-                                  by their standard deviations
-    """
-    correlations = returns.corr()
-    adj_correlations = get_adjusted_cor_matrix(correlations)
-    initial_weights = adj_correlations.T.mean()
-
-    ranks = initial_weights.rank()
-    ranks /= ranks.sum()
-
-    weights = adj_correlations.dot(ranks)
-    weights /= weights.sum()
-
-    if risk_adjusted:
-        weights = weights / returns.std()
-        weights /= weights.sum()
-    return weights
-
-def get_adjusted_cor_matrix(cor):
-    values = cor.values.flatten()
-    mu = np.mean(values)
-    sigma = np.std(values)
-    distribution = scipy.stats.norm(mu, sigma)
-    return 1 - cor.apply(lambda x: distribution.cdf(x))
     
 def build_past_data():
     unempl_list = [
@@ -280,7 +264,7 @@ def build_past_data():
         6.6,6.7,6.7,6.2,6.3,6.1,6.2,6.2,5.9,5.7,5.8,5.6,
         5.7,5.5,5.4,5.4,5.5,5.3,5.2,5.1,5,5,5,5,
         4.9,4.9,5,5,4.7,4.9,4.9,4.9,4.9,4.8,4.6,4.7,
-        4.8,4.7,4.5]
+        4.8,4.7,4.5,4.4,4.3,4.4]
     
     # Strip future values
     now = get_datetime()
